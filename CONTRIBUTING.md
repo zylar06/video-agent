@@ -2,6 +2,8 @@
 
 先阅读 [两人协作计划](docs/collaboration/README.md) 和 [GitHub 任务索引](docs/collaboration/github-index.md)，认领一个准备就绪的 Issue。当前产品定位仍是单人本地视频工具，共同开发不意味着引入多人在线编辑。
 
+写文档、界面文案和提交信息前，先读 [中文技术文档写作规范](docs/writing-guide.md)，交付前按其中的自查清单核对。
+
 ## 本地准备
 
 依赖 Go 1.24+ 和 FFmpeg/ffprobe 6+（libx264/AAC）；P1 验证环境见 [验收记录](docs/p1-acceptance.md)。
