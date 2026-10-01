@@ -51,7 +51,7 @@ func Open(dir string) (*Store, error) {
 	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fail(err)
 	}
-	if version > 4 {
+	if version > 5 {
 		return fail(errors.New("database is newer than this application"))
 	}
 	_, err = db.Exec(`
@@ -88,6 +88,20 @@ PRAGMA user_version=3;`)
 CREATE TABLE IF NOT EXISTS draft_plans(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), asset_id TEXT NOT NULL, version INTEGER NOT NULL, body BLOB NOT NULL, FOREIGN KEY(project_id,asset_id) REFERENCES assets(project_id, id));
 CREATE INDEX IF NOT EXISTS draft_plans_project_asset ON draft_plans(project_id,asset_id);
 PRAGMA user_version=4;`)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	if version < 5 {
+		// Conversations and UI analysis tasks used to live only in process memory,
+		// so a restart silently discarded both. They are stored as JSON bodies
+		// because the only reader is the service that wrote them.
+		_, err = db.Exec(`
+CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, preview TEXT NOT NULL DEFAULT '', messages INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, body BLOB NOT NULL);
+CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at DESC);
+CREATE TABLE IF NOT EXISTS ui_tasks(id TEXT PRIMARY KEY, project_id TEXT NOT NULL, asset_id TEXT NOT NULL, status TEXT NOT NULL, body BLOB NOT NULL);
+CREATE INDEX IF NOT EXISTS ui_tasks_status ON ui_tasks(status);
+PRAGMA user_version=5;`)
 		if err != nil {
 			return fail(err)
 		}
@@ -518,6 +532,158 @@ func (s *Store) History(id string) ([]domain.TimelineRevision, error) {
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// SessionSummary describes one stored conversation for a sidebar listing. The
+// transcript itself stays in the body so listing never pays for full decode.
+type SessionSummary struct {
+	ID        string    `json:"id"`
+	Preview   string    `json:"preview,omitempty"`
+	Messages  int       `json:"messages"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// PutSession upserts a conversation transcript. Preview and Messages are stored
+// alongside the body so the sidebar can be listed without decoding every
+// transcript.
+func (s *Store) PutSession(id string, body []byte, preview string, messages int) error {
+	if id == "" || len(body) == 0 {
+		return errors.New("session requires id and body")
+	}
+	_, err := s.db.Exec(`INSERT INTO sessions(id,preview,messages,updated_at,body) VALUES(?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET preview=excluded.preview, messages=excluded.messages, updated_at=excluded.updated_at, body=excluded.body`,
+		id, preview, messages, time.Now().UTC().UnixNano(), body)
+	return err
+}
+
+func (s *Store) Session(id string) ([]byte, error) {
+	var body []byte
+	if err := s.db.QueryRow("SELECT body FROM sessions WHERE id=?", id).Scan(&body); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return body, nil
+}
+
+func (s *Store) Sessions(limit int) ([]SessionSummary, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	rows, err := s.db.Query("SELECT id,preview,messages,updated_at FROM sessions ORDER BY updated_at DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SessionSummary{}
+	for rows.Next() {
+		var item SessionSummary
+		var updated int64
+		if err = rows.Scan(&item.ID, &item.Preview, &item.Messages, &updated); err != nil {
+			return nil, err
+		}
+		item.UpdatedAt = time.Unix(0, updated).UTC()
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteSession(id string) error {
+	_, err := s.db.Exec("DELETE FROM sessions WHERE id=?", id)
+	return err
+}
+
+func (s *Store) PutAnalysisTask(t domain.AnalysisTask) (domain.AnalysisTask, error) {
+	if t.ID == "" || t.ProjectID == "" || t.AssetID == "" {
+		return t, errors.New("analysis task requires id, project and asset")
+	}
+	switch t.Status {
+	case domain.TaskQueued, domain.TaskRunning, domain.TaskCompleted, domain.TaskFailed, domain.TaskCancelled, domain.TaskInterrupted:
+	default:
+		return t, errors.New("invalid analysis task status")
+	}
+	t.UpdatedAt = time.Now().UTC()
+	b, err := json.Marshal(t)
+	if err != nil {
+		return t, err
+	}
+	_, err = s.db.Exec(`INSERT INTO ui_tasks(id,project_id,asset_id,status,body) VALUES(?,?,?,?,?)
+ON CONFLICT(id) DO UPDATE SET status=excluded.status, body=excluded.body`,
+		t.ID, t.ProjectID, t.AssetID, t.Status, b)
+	return t, err
+}
+
+func (s *Store) AnalysisTask(id string) (t domain.AnalysisTask, err error) {
+	err = decode(s.db.QueryRow("SELECT body FROM ui_tasks WHERE id=?", id), &t)
+	return
+}
+
+func (s *Store) AnalysisTasks(limit int) ([]domain.AnalysisTask, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	rows, err := s.db.Query("SELECT body FROM ui_tasks ORDER BY rowid DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.AnalysisTask{}
+	for rows.Next() {
+		var b []byte
+		var t domain.AnalysisTask
+		if err = rows.Scan(&b); err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal(b, &t); err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) DeleteAnalysisTask(id string) error {
+	_, err := s.db.Exec("DELETE FROM ui_tasks WHERE id=?", id)
+	return err
+}
+
+// ReconcileAnalysisTasks runs once at startup. No worker goroutine survives a
+// restart, so any task still claiming to be queued or running belongs to a dead
+// process; marking it interrupted tells the user the truth instead of leaving a
+// job that appears to progress forever.
+func (s *Store) ReconcileAnalysisTasks() (int, error) {
+	rows, err := s.db.Query("SELECT body FROM ui_tasks WHERE status IN (?,?)", domain.TaskQueued, domain.TaskRunning)
+	if err != nil {
+		return 0, err
+	}
+	stale := []domain.AnalysisTask{}
+	for rows.Next() {
+		var b []byte
+		var t domain.AnalysisTask
+		if err = rows.Scan(&b); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if err = json.Unmarshal(b, &t); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		stale = append(stale, t)
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	for i := range stale {
+		stale[i].Status = domain.TaskInterrupted
+		stale[i].Error = "服务在任务完成前重启，任务已中断"
+		if _, err = s.PutAnalysisTask(stale[i]); err != nil {
+			return i, err
+		}
+	}
+	return len(stale), nil
 }
 
 type queryer interface {
