@@ -68,7 +68,8 @@ func TestModelToolsProjectionHidesExecutionDetail(t *testing.T) {
 			t.Fatalf("incomplete projected tool: %+v", tool)
 		}
 	}
-	// The wire payload must not leak anything beyond the three model-facing keys.
+	// The wire payload must not leak anything beyond the three model-facing keys,
+	// including the local read-only classification.
 	encoded, err := json.Marshal(tools[0])
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
@@ -151,5 +152,24 @@ func TestClampToolResultLeavesSmallResultsAlone(t *testing.T) {
 	small := `{"api_version":"v1","ok":true,"result":{"id":"proj-1"}}`
 	if got := clampToolResult(small); got != small {
 		t.Fatalf("small results must pass through untouched:\n got %s\nwant %s", got, small)
+	}
+}
+
+// Concurrency classification is a safety property: a tool that writes must never
+// be dispatched alongside another call, or revision numbers and generated ids
+// become nondeterministic.
+func TestOnlyObservingToolsAreConcurrencySafe(t *testing.T) {
+	stateful := map[string]bool{
+		"project_create": true, "assets_import": true, "analyze": true,
+		"evidence_add": true, "timeline_create": true, "proposal_create": true,
+		"edit_apply": true, "render_submit": true, "jobs_cancel": true,
+	}
+	for _, spec := range (&Service{}).ToolSpecs() {
+		if stateful[spec.Name] && spec.ConcurrencySafe() {
+			t.Errorf("%s mutates state and must not be concurrency-safe", spec.Name)
+		}
+		if !stateful[spec.Name] && !spec.ConcurrencySafe() {
+			t.Errorf("%s only observes but is not marked ReadOnly", spec.Name)
+		}
 	}
 }

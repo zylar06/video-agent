@@ -234,11 +234,21 @@ func New(a *app.App) http.Handler {
 
 func saveUpload(dataDir, group, name string, source io.Reader) (string, error) {
 	ext := strings.ToLower(filepath.Ext(name))
-	if group == "uploads" && ext != ".mp4" && ext != ".mov" && ext != ".m4v" {
-		return "", errors.New("仅支持 MP4、MOV 或 M4V 视频")
-	}
-	if group == "subtitles" && ext != ".srt" && ext != ".vtt" {
-		return "", errors.New("字幕仅支持 SRT 或 VTT")
+	switch group {
+	case "uploads":
+		if ext != ".mp4" && ext != ".mov" && ext != ".m4v" {
+			return "", errors.New("仅支持 MP4、MOV 或 M4V 视频")
+		}
+	case "subtitles":
+		if ext != ".srt" && ext != ".vtt" {
+			return "", errors.New("字幕仅支持 SRT 或 VTT")
+		}
+	case "agent-uploads":
+		// The chat surfaces accepts both media and subtitles, so it validates
+		// against the union rather than one group's format.
+		if !isAgentUpload(ext) {
+			return "", errors.New("仅支持 MP4、MOV、M4V、SRT 或 VTT")
+		}
 	}
 	dir := filepath.Join(dataDir, group)
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -256,6 +266,16 @@ func saveUpload(dataDir, group, name string, source io.Reader) (string, error) {
 		return "", errors.Join(copyErr, closeErr)
 	}
 	return path, nil
+}
+
+// isAgentUpload reports whether an extension may be dropped into the chat
+// surface: media to import, or subtitles to analyze against.
+func isAgentUpload(ext string) bool {
+	switch ext {
+	case ".mp4", ".mov", ".m4v", ".srt", ".vtt":
+		return true
+	}
+	return false
 }
 
 func draftTimeline(a *app.App, projectID, assetID string, result chat.Result) (domain.TimelineRevision, error) {

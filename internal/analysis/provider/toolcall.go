@@ -9,33 +9,18 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/zylar06/video-agent/internal/domain"
 )
 
-// Message is one turn of an OpenAI-compatible conversation. It carries the
-// union of the fields the tool-calling loop needs: plain user/assistant text,
-// an assistant turn that requested tools, and the tool results that answer it.
-type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	Name       string     `json:"name,omitempty"`
-}
-
-// ToolCall is one function invocation requested by the model. Arguments stays
-// raw JSON: the tool owns validation, and re-encoding here would only lose
-// fidelity.
-type ToolCall struct {
-	ID        string          `json:"id"`
-	Type      string          `json:"type,omitempty"`
-	Function  ToolCallFunc    `json:"function"`
-	RawObject json.RawMessage `json:"-"`
-}
-
-type ToolCallFunc struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
+// Message, ToolCall and ToolCallFunc are aliases for the domain types. They live
+// there so the session store can persist a conversation without the provider and
+// store packages importing each other.
+type (
+	Message      = domain.Message
+	ToolCall     = domain.ToolCall
+	ToolCallFunc = domain.ToolCallFunc
+)
 
 // ToolDefinition is the model-facing half of a registered tool. Only name,
 // description and parameters are ever sent; execution metadata stays local.
@@ -155,5 +140,5 @@ func (r ChatResult) AssistantMessage() Message {
 
 // ToolMessage wraps one tool result for the follow-up request.
 func ToolMessage(callID, name, content string) Message {
-	return Message{Role: "tool", ToolCallID: callID, Name: name, Content: content}
+	return domain.ToolMessage(callID, name, content)
 }

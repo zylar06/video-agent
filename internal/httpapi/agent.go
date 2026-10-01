@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,6 +26,13 @@ func agentRoutes(mux *http.ServeMux, a *app.App) *agent.Runtime {
 	})
 	mux.HandleFunc("GET /v1/agent/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: runtime.Transcript(r.PathValue("id"))})
+	})
+	mux.HandleFunc("DELETE /v1/agent/sessions/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if err := runtime.DeleteSession(r.PathValue("id")); err != nil {
+			write(w, http.StatusBadRequest, invalid(err))
+			return
+		}
+		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: map[string]string{"deleted": r.PathValue("id")}})
 	})
 	mux.HandleFunc("GET /v1/agent/config", func(w http.ResponseWriter, r *http.Request) {
 		config := provider.ConfigFromEnvAliases("VIDEO_AGENT_TEXT", "AUTOCLIP_TEXT")
@@ -55,7 +63,48 @@ func agentRoutes(mux *http.ServeMux, a *app.App) *agent.Runtime {
 		}
 		streamTurn(w, r, runtime, in.SessionID, in.Message)
 	})
+	// Upload stores a dropped file and returns its local path. The client then
+	// hands that path to the agent in a normal message, so an import goes through
+	// the same tool the model already knows about instead of a side channel that
+	// the conversation cannot see.
+	mux.HandleFunc("POST /v1/agent/upload", func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 2<<30)
+		if err := r.ParseMultipartForm(16 << 20); err != nil {
+			write(w, http.StatusBadRequest, invalid(errors.New("文件超过 2GB 或上传格式不正确")))
+			return
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			write(w, http.StatusBadRequest, invalid(errors.New("请选择要上传的文件")))
+			return
+		}
+		defer file.Close()
+		path, err := saveUpload(a.Store.Dir, "agent-uploads", header.Filename, file)
+		if err != nil {
+			write(w, http.StatusBadRequest, invalid(err))
+			return
+		}
+		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: map[string]any{
+			"path": path,
+			"name": header.Filename,
+			"size": header.Size,
+			"kind": uploadKind(header.Filename),
+		}})
+	})
 	return runtime
+}
+
+// uploadKind classifies an upload so the client can word its message correctly:
+// subtitles are attached to an analysis, video is imported as an asset.
+func uploadKind(name string) string {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".srt", ".vtt":
+		return "subtitle"
+	case ".mp4", ".mov", ".m4v":
+		return "video"
+	default:
+		return "unknown"
+	}
 }
 
 // streamTurn runs one agent turn and streams its events as Server-Sent Events.

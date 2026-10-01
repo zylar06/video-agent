@@ -1,300 +1,739 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Video Agent · 对话剪辑助手</title>
+<title>Video Agent · 工作区</title>
 <style>
   :root{
-    color-scheme:light;
     --bg:oklch(98.4% .004 258);
     --panel:oklch(100% 0 0);
+    --panel-2:oklch(98.8% .003 258);
     --ink:oklch(24% .025 258);
-    --muted:oklch(50% .022 258);
+    --muted:oklch(52% .022 258);
     --line:oklch(89% .012 258);
-    --line-soft:oklch(94% .008 258);
+    --line-soft:oklch(94.5% .008 258);
     --accent:oklch(52% .19 264);
     --accent-soft:oklch(95% .03 264);
     --good:oklch(48% .13 153);
     --bad:oklch(52% .18 26);
     --warn:oklch(58% .13 75);
-    --radius:12px;
-    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+    --radius:10px;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  html[data-theme="dark"]{
+    --bg:oklch(21% .012 258);
+    --panel:oklch(25% .014 258);
+    --panel-2:oklch(23% .012 258);
+    --ink:oklch(94% .008 258);
+    --muted:oklch(68% .02 258);
+    --line:oklch(33% .014 258);
+    --line-soft:oklch(29% .012 258);
+    --accent:oklch(72% .14 264);
+    --accent-soft:oklch(31% .05 264);
+    --good:oklch(72% .14 153);
+    --bad:oklch(70% .16 26);
+    --warn:oklch(78% .13 75);
   }
   *{box-sizing:border-box}
   html,body{height:100%}
-  body{margin:0;background:var(--bg);color:var(--ink);overflow:hidden}
-  .app{display:grid;grid-template-columns:260px minmax(0,1fr);height:100vh}
+  body{margin:0;background:var(--bg);color:var(--ink);overflow:hidden;
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;font-size:14px}
 
-  /* ---------- sidebar ---------- */
-  aside{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
-  .brand{display:flex;align-items:center;gap:9px;padding:16px 16px 12px;font-weight:700;letter-spacing:-.01em}
-  .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);flex:none}
-  .brand small{display:block;font-weight:500;color:var(--muted);font-size:11px;letter-spacing:0}
-  .newchat{margin:4px 12px 10px;padding:9px 12px;border:1px solid var(--line);background:var(--panel);border-radius:9px;cursor:pointer;font:inherit;font-size:13px;color:var(--ink);text-align:left;display:flex;align-items:center;gap:8px}
-  .newchat:hover{background:var(--accent-soft);border-color:var(--accent)}
-  .sessions{overflow-y:auto;flex:1;padding:0 8px 12px;min-height:0}
-  .sess{padding:9px 10px;border-radius:9px;cursor:pointer;font-size:13px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
+  /* three-column AppFrame */
+  /* three-column AppFrame.
+     Columns are pinned explicitly rather than left to auto-placement. With a
+     collapsed first track (0px) auto-placement shifted every item one track to
+     the left, so hiding the left panel handed the conversation's 1fr track to
+     the right panel and left the centre column 0px wide. */
+  .frame{display:grid;grid-template-columns:246px minmax(0,1fr) 320px;height:100vh}
+  #left{grid-column:1}
+  #center{grid-column:2}
+  #right{grid-column:3}
+  .col{min-width:0;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+  #left{background:var(--panel);border-right:1px solid var(--line)}
+  #right{background:var(--panel);border-left:1px solid var(--line)}
+  #center{background:var(--bg)}
+
+  .rail{display:flex;gap:3px;align-items:center}
+  .iconbtn{border:1px solid transparent;background:transparent;color:var(--muted);border-radius:8px;
+    width:29px;height:29px;display:grid;place-items:center;cursor:pointer;font-size:13px;flex:none}
+  .iconbtn:hover{background:var(--line-soft);color:var(--ink)}
+  .iconbtn.on{background:var(--accent-soft);color:var(--accent)}
+
+  /* Layout controls carry text: an unlabelled glyph gave no clue that it was the
+     only way to bring a hidden panel back. */
+  .layoutbar{display:flex;gap:5px;align-items:center}
+  .layoutbtn{border:1px solid var(--line);background:var(--panel);color:var(--muted);font:inherit;
+    font-size:11.5px;padding:5px 10px;border-radius:8px;cursor:pointer;white-space:nowrap;
+    display:inline-flex;align-items:center;gap:5px}
+  .layoutbtn:hover{border-color:var(--accent);color:var(--ink)}
+  .layoutbtn.on{background:var(--accent-soft);border-color:color-mix(in oklab,var(--accent) 40%,var(--line));color:var(--accent);font-weight:600}
+  .layoutbtn.reset{display:none;border-color:color-mix(in oklab,var(--warn) 45%,var(--line));color:var(--warn)}
+  .layoutbtn.reset.show{display:inline-flex}
+  .layoutbtn.reset:hover{border-color:var(--warn);color:var(--warn)}
+  @media (max-width:900px){
+    .layoutbtn{font-size:0;gap:0;padding:5px 8px}
+    .layoutbtn::first-letter{font-size:12px}
+    .layoutbtn.reset{font-size:11.5px}
+  }
+
+  .panelhead{display:flex;align-items:center;justify-content:space-between;gap:8px;
+    padding:8px 11px;border-bottom:1px solid var(--line);flex:none;min-height:44px}
+  .panelhead h2{margin:0;font-size:12px;font-weight:650;color:var(--muted)}
+
+  .newchat{margin:8px 10px;padding:8px 11px;border:1px solid var(--line);background:var(--panel);
+    border-radius:9px;cursor:pointer;font:inherit;font-size:12.5px;color:var(--ink);text-align:left;
+    display:flex;align-items:center;gap:8px;flex:none}
+  .newchat:hover{border-color:var(--accent);background:var(--accent-soft)}
+  .scroll{overflow-y:auto;min-height:0;flex:1}
+
+  .sess{padding:7px 11px;margin:1px 6px;border-radius:8px;cursor:pointer;display:flex;flex-direction:column;gap:2px}
   .sess:hover{background:var(--line-soft)}
-  .sess.on{background:var(--accent-soft);color:var(--ink)}
-  .sess b{font-weight:600;color:var(--ink);font-size:12.5px}
-  .sess span{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .sidefoot{border-top:1px solid var(--line);padding:10px 14px;font-size:11.5px;color:var(--muted);display:flex;flex-direction:column;gap:3px}
-  .sidefoot b{color:var(--ink);font-weight:600}
+  .sess.on{background:var(--accent-soft)}
+  .sess b{font-weight:600;font-size:12.5px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sess span{font-size:11px;color:var(--muted);display:flex;gap:6px;align-items:center}
+  .dotlamp{width:6px;height:6px;border-radius:50%;background:var(--good);flex:none}
+  .sess .del{margin-left:auto;color:var(--muted);opacity:0;font-size:12px;line-height:1;font-style:normal}
+  .sess:hover .del{opacity:1}
+  .sess .del:hover{color:var(--bad)}
 
-  /* ---------- main ---------- */
-  main{display:flex;flex-direction:column;min-width:0;min-height:0}
-  header.top{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 22px;border-bottom:1px solid var(--line);background:var(--panel)}
-  .title{font-weight:650;font-size:14px}
-  .meta{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:9px;flex-wrap:wrap}
-  .pill{border:1px solid var(--line);border-radius:999px;padding:2px 9px;font-size:11.5px}
-  .pill.ok{border-color:color-mix(in oklab,var(--good) 45%,var(--line));color:var(--good)}
-  .pill.off{border-color:color-mix(in oklab,var(--bad) 40%,var(--line));color:var(--bad)}
+  .tree{padding:4px 6px 12px}
+  .node{display:flex;align-items:center;gap:6px;padding:5px 7px;border-radius:7px;cursor:pointer;font-size:12.5px}
+  .node:hover{background:var(--line-soft)}
+  .node .caret{width:10px;color:var(--muted);font-size:8px;flex:none}
+  .node .nname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .node .badge{font-size:10px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:0 6px}
+  .children{margin-left:12px;border-left:1px solid var(--line-soft);padding-left:2px}
+  .leaf{padding:5px 7px;border-radius:7px;font-size:11.5px;color:var(--muted);display:flex;gap:6px;align-items:center}
+  .leaf:hover{background:var(--line-soft);color:var(--ink)}
+  .leaf .meta{margin-left:auto;font-size:10px;opacity:.8;font-family:var(--mono)}
+  .emptyhint{padding:10px 12px;color:var(--muted);font-size:12px;line-height:1.65}
 
-  .scroll{flex:1;overflow-y:auto;min-height:0;padding:22px 0 8px}
-  .thread{max-width:820px;margin:0 auto;padding:0 22px;display:flex;flex-direction:column;gap:16px}
+  .topbar{display:flex;align-items:center;gap:9px;padding:7px 13px;border-bottom:1px solid var(--line);
+    background:var(--panel);flex:none;min-height:44px}
+  .topbar .spacer{flex:1}
+  .pill{border:1px solid var(--line);border-radius:999px;padding:2px 9px;font-size:11.5px;color:var(--muted);white-space:nowrap}
+  .pill.ok{color:var(--good);border-color:color-mix(in oklab,var(--good) 45%,var(--line))}
+  .pill.off{color:var(--bad);border-color:color-mix(in oklab,var(--bad) 40%,var(--line))}
+  .pill.busy{color:var(--warn);border-color:color-mix(in oklab,var(--warn) 45%,var(--line))}
 
-  .empty{margin:8vh auto 0;max-width:560px;text-align:center;color:var(--muted)}
-  .empty h1{font-size:22px;color:var(--ink);margin:0 0 8px;letter-spacing:-.02em}
-  .empty p{margin:0 0 18px;font-size:13.5px;line-height:1.65}
-  .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center}
-  .chip{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 13px;font-size:12.5px;cursor:pointer;font:inherit;color:var(--ink)}
+  .thread{max-width:760px;margin:0 auto;padding:20px 20px 8px;display:flex;flex-direction:column;gap:14px}
+  .empty{margin:8vh auto 0;max-width:540px;text-align:center;padding:0 20px}
+  .empty h1{font-size:20px;margin:0 0 8px;letter-spacing:-.02em}
+  .empty p{margin:0 0 16px;color:var(--muted);font-size:13px;line-height:1.7}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;justify-content:center}
+  .chip{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:6px 12px;
+    font:inherit;font-size:12.5px;color:var(--ink);cursor:pointer}
   .chip:hover{border-color:var(--accent);background:var(--accent-soft)}
 
-  .msg{display:flex;gap:11px}
-  .who{flex:none;width:26px;height:26px;border-radius:7px;display:grid;place-items:center;font-size:11px;font-weight:700;border:1px solid var(--line)}
-  .msg.user .who{background:var(--accent);color:#fff;border-color:transparent}
+  .msg{display:flex;gap:10px}
+  .who{flex:none;width:24px;height:24px;border-radius:7px;display:grid;place-items:center;font-size:10.5px;font-weight:700;border:1px solid var(--line)}
+  .msg.user .who{background:var(--accent);color:var(--panel);border-color:transparent}
   .msg.assistant .who{background:var(--panel);color:var(--accent)}
   .bubble{min-width:0;flex:1}
-  .bubble .txt{white-space:pre-wrap;word-break:break-word;line-height:1.68;font-size:14px;padding-top:2px}
-  .msg.user .bubble .txt{background:var(--accent-soft);border:1px solid color-mix(in oklab,var(--accent) 22%,var(--line));border-radius:var(--radius);padding:10px 13px}
+  .bubble .txt{white-space:pre-wrap;word-break:break-word;line-height:1.68;padding-top:2px}
+  .msg.user .bubble .txt{background:var(--accent-soft);border:1px solid color-mix(in oklab,var(--accent) 22%,var(--line));border-radius:var(--radius);padding:9px 12px}
 
-  /* tool call cards — the point of the whole UI */
-  .tool{border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden;margin-top:9px}
-  .tool>summary{list-style:none;cursor:pointer;padding:9px 12px;display:flex;align-items:center;gap:9px;font-size:12.5px}
+  .tool{border:1px solid var(--line);border-radius:9px;background:var(--panel);overflow:hidden;margin-top:8px}
+  .tool>summary{list-style:none;cursor:pointer;padding:8px 11px;display:flex;align-items:center;gap:8px;font-size:12.5px}
   .tool>summary::-webkit-details-marker{display:none}
-  .tool .nm{font-weight:650;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
-  .tool .arg{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;font-family:ui-monospace,Menlo,monospace;font-size:11.5px}
-  .tool .st{font-size:11px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);flex:none}
+  .tool .nm{font-family:var(--mono);font-size:11.5px;font-weight:650}
+  .tool .arg{color:var(--muted);font-family:var(--mono);font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .tool .st{font-size:10.5px;padding:1px 7px;border-radius:999px;border:1px solid var(--line);flex:none;color:var(--muted)}
   .tool .st.run{color:var(--warn);border-color:color-mix(in oklab,var(--warn) 40%,var(--line))}
   .tool .st.ok{color:var(--good);border-color:color-mix(in oklab,var(--good) 40%,var(--line))}
   .tool .st.err{color:var(--bad);border-color:color-mix(in oklab,var(--bad) 40%,var(--line))}
-  .tool pre{margin:0;padding:11px 13px;border-top:1px solid var(--line);background:oklch(98.8% .003 258);font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto}
-  .tool .caret{color:var(--muted);font-size:10px;flex:none}
+  .tool pre{margin:0;padding:10px 12px;border-top:1px solid var(--line);background:var(--panel-2);
+    font-family:var(--mono);font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto}
+  .tool .caret{color:var(--muted);font-size:8px;flex:none}
 
-  .steps{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;padding:2px 0 0 37px}
+  .notice{border:1px solid var(--line);border-radius:9px;background:var(--panel-2);color:var(--muted);
+    padding:8px 11px;font-size:12px;margin-top:8px}
+  .steps{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;padding-left:34px}
   .spin{width:11px;height:11px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite}
   @keyframes sp{to{transform:rotate(360deg)}}
 
-  /* ---------- composer ---------- */
-  .composer{border-top:1px solid var(--line);background:var(--panel);padding:13px 22px 15px}
-  .cbox{max-width:820px;margin:0 auto}
-  .field{display:flex;gap:9px;align-items:flex-end;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);padding:8px 8px 8px 12px;transition:border-color .15s}
+  .composer{border-top:1px solid var(--line);background:var(--panel);padding:11px 20px 13px;flex:none}
+  .cbox{max-width:760px;margin:0 auto}
+  .field{display:flex;gap:8px;align-items:flex-end;border:1px solid var(--line);border-radius:var(--radius);
+    background:var(--panel);padding:7px 7px 7px 11px}
   .field:focus-within{border-color:var(--accent)}
-  textarea{flex:1;border:0;outline:0;resize:none;font:inherit;font-size:14px;line-height:1.55;max-height:190px;min-height:24px;padding:6px 0;background:transparent;color:var(--ink)}
-  .send{border:0;border-radius:9px;background:var(--accent);color:#fff;font:inherit;font-size:13px;font-weight:600;padding:9px 15px;cursor:pointer;flex:none}
+  .field.drag{border-color:var(--accent);border-style:dashed;background:var(--accent-soft)}
+  textarea{flex:1;border:0;outline:0;resize:none;font:inherit;line-height:1.55;max-height:180px;min-height:23px;
+    padding:6px 0;background:transparent;color:var(--ink)}
+  .send{border:0;border-radius:8px;background:var(--accent);color:var(--panel);font:inherit;font-size:13px;
+    font-weight:600;padding:8px 14px;cursor:pointer;flex:none}
   .send:disabled{opacity:.45;cursor:not-allowed}
-  .stop{background:var(--bad)}
-  .hint{font-size:11.5px;color:var(--muted);margin-top:7px;display:flex;justify-content:space-between;gap:10px}
-  kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:0 4px;font-family:inherit;font-size:10.5px}
-  .banner{margin:9px auto 0;max-width:820px;border:1px solid color-mix(in oklab,var(--warn) 40%,var(--line));background:color-mix(in oklab,var(--warn) 8%,var(--panel));color:oklch(42% .1 75);border-radius:9px;padding:9px 12px;font-size:12.5px}
-  .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--ink);color:#fff;padding:9px 16px;border-radius:9px;font-size:13px;opacity:0;pointer-events:none;transition:opacity .2s}
-  .toast.on{opacity:.94}
-  @media (max-width:760px){.app{grid-template-columns:1fr}aside{display:none}}
+  .send.stop{background:var(--bad)}
+  .hint{font-size:11px;color:var(--muted);margin-top:6px;display:flex;justify-content:space-between;gap:10px}
+  kbd{border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;padding:0 4px;font-family:inherit;font-size:10px}
+  .attachments{display:flex;flex-wrap:wrap;gap:6px}
+  .attach{display:flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel-2);
+    border-radius:8px;padding:4px 8px;font-size:11.5px;color:var(--muted);max-width:100%}
+  .attach b{color:var(--ink);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:190px}
+  .attach .x{cursor:pointer;color:var(--muted);font-style:normal}
+  .attach .x:hover{color:var(--bad)}
+  .banner{margin:0 auto 9px;max-width:760px;border:1px solid color-mix(in oklab,var(--warn) 40%,var(--line));
+    background:color-mix(in oklab,var(--warn) 8%,var(--panel));color:var(--warn);border-radius:9px;padding:8px 11px;font-size:12px}
+
+  .tabs{display:flex;gap:2px}
+  .tab{border:1px solid transparent;background:transparent;color:var(--muted);font:inherit;font-size:12px;
+    padding:5px 9px;border-radius:7px;cursor:pointer}
+  .tab:hover{background:var(--line-soft);color:var(--ink)}
+  .tab.on{background:var(--accent-soft);color:var(--accent)}
+  .tabpane{padding:10px 12px;font-size:12.5px}
+  .card{border:1px solid var(--line);border-radius:9px;padding:9px 11px;margin-bottom:8px;background:var(--panel-2)}
+  .card h3{margin:0 0 5px;font-size:12.5px;font-weight:650;display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+  .card .kv{font-size:11.5px;color:var(--muted);font-family:var(--mono);line-height:1.65;word-break:break-all}
+  .card a{color:var(--accent);text-decoration:none;font-size:11.5px}
+  .card a:hover{text-decoration:underline}
+  .bar{height:4px;border-radius:999px;background:var(--line);overflow:hidden;margin-top:7px}
+  .bar i{display:block;height:100%;background:var(--accent)}
+  .clip{display:flex;gap:8px;font-size:11.5px;padding:5px 0;border-bottom:1px solid var(--line-soft);font-family:var(--mono)}
+  .clip:last-child{border-bottom:0}
+  .clip .t{color:var(--accent);flex:none}
+
+  /* Video preview. A video tool that cannot show you the video is not usable,
+     so a player is embedded next to every finished render and can be enlarged
+     when the side panel is too narrow to judge the result. */
+  .player{width:100%;border-radius:8px;background:#000;display:block;margin-top:7px;max-height:260px}
+  .playerbar{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap}
+  .mini{border:1px solid var(--line);background:var(--panel);color:var(--muted);font:inherit;font-size:11px;
+    padding:3px 8px;border-radius:7px;cursor:pointer}
+  .mini:hover{border-color:var(--accent);color:var(--accent)}
+  .modal{position:fixed;inset:0;background:oklch(0% 0 0/.72);display:none;place-items:center;z-index:80;padding:24px}
+  .modal.on{display:grid}
+  .modal .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px;
+    max-width:min(1180px,96vw);width:100%;box-shadow:0 18px 60px oklch(0% 0 0/.4)}
+  .modal .box header{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+  .modal .box h3{margin:0;font-size:13px;font-weight:650;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .modal video{width:100%;max-height:78vh;border-radius:9px;background:#000;display:block}
+
+  .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);
+    padding:8px 15px;border-radius:9px;font-size:12.5px;opacity:0;pointer-events:none;transition:opacity .2s;z-index:50}
+  .toast.on{opacity:.95}
+  .dropveil{position:fixed;inset:0;background:color-mix(in oklab,var(--accent) 8%,transparent);
+    border:3px dashed var(--accent);display:none;place-items:center;z-index:60;pointer-events:none}
+  .dropveil.on{display:grid}
+  .dropveil div{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:15px 22px}
+  /* Responsive sizing must not fight the toggles.
+     Two rules learned the hard way:
+     1. Never set display here. A media-query display:none cannot be overridden
+        by the inline style the toggle sets, which made "恢复布局" look broken.
+     2. Never collapse a track to 0 either. Columns are pinned by grid-column, so
+        an empty track is simply unused; collapsing it only invited
+        auto-placement to shuffle the remaining panels across tracks. Hiding a
+        panel is done once, by display:none on the panel itself. */
+  @media (max-width:1180px){
+    .frame{grid-template-columns:minmax(0,220px) minmax(0,1fr) minmax(0,290px)}
+  }
+  @media (max-width:860px){
+    .frame{grid-template-columns:minmax(0,200px) minmax(0,1fr) minmax(0,250px)}
+  }
 </style>
 </head>
 <body>
-<div class="app">
-  <aside>
-    <div class="brand"><span class="dot"></span><span>Video Agent<small>对话式剪辑助手</small></span></div>
-    <button class="newchat" id="newChat">＋ 新对话</button>
-    <div class="sessions" id="sessions"></div>
-    <div class="sidefoot">
-      <div><b id="fModel">—</b></div>
-      <div id="fTools">— 个工具</div>
-      <div><a href="/" style="color:var(--accent);text-decoration:none">打开经典剪辑台 →</a></div>
+<div class="frame" id="frame">
+  <aside class="col" id="left">
+    <div class="panelhead">
+      <h2>工作区</h2>
+      <div class="rail"><button class="iconbtn" id="btnRefreshAll" title="刷新">↻</button></div>
+    </div>
+    <button class="newchat" id="btnNew">＋ 新对话</button>
+    <div class="scroll">
+      <div id="sessions"></div>
+      <div class="panelhead" style="border-top:1px solid var(--line)"><h2>素材</h2></div>
+      <div class="tree" id="tree"></div>
     </div>
   </aside>
 
-  <main>
-    <header class="top">
-      <div class="title">剪辑助手</div>
-      <div class="meta">
-        <span class="pill" id="mCfg">模型检查中…</span>
-        <span class="pill" id="mTools">工具 —</span>
-        <span class="pill" id="mStep">待命</span>
+  <section class="col" id="center">
+    <div class="topbar">
+      <span class="pill" id="mCfg">检查模型…</span>
+      <span class="pill" id="mTools">工具 —</span>
+      <span class="spacer"></span>
+      <span class="pill" id="mStep">待命</span>
+      <div class="layoutbar">
+        <button class="layoutbtn" id="btnLeft" title="显示或隐藏左侧工作区">◧ 左栏</button>
+        <button class="layoutbtn" id="btnRight" title="显示或隐藏右侧面板">◨ 右栏</button>
+        <button class="layoutbtn" id="btnTheme" title="切换明暗主题">◐ 主题</button>
+        <button class="layoutbtn reset" id="btnResetLayout" title="恢复默认布局">↺ 恢复布局</button>
       </div>
-    </header>
-
-    <div class="scroll" id="scroll">
-      <div class="thread" id="thread"></div>
     </div>
+
+    <div class="scroll" id="scroll"><div class="thread" id="thread"></div></div>
 
     <div class="composer">
       <div class="banner" id="banner" style="display:none"></div>
       <div class="cbox">
-        <div class="field">
-          <textarea id="input" rows="1" placeholder="说说你想怎么剪，例如：先看看有哪些素材，然后找出讲数学的片段剪成一分钟"></textarea>
+        <div class="attachments" id="attachments" style="margin-bottom:0"></div>
+        <div class="field" id="field">
+          <textarea id="input" rows="1" placeholder="说说你想怎么剪。也可以把视频或字幕文件直接拖进来。"></textarea>
           <button class="send" id="send">发送</button>
         </div>
         <div class="hint">
           <span>助手会自己决定调用哪个工具 · 每一步都可展开核对</span>
-          <span><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+          <span><kbd>Enter</kbd> 发送 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行 · 拖入文件上传</span>
         </div>
       </div>
     </div>
-  </main>
+  </section>
+
+  <aside class="col" id="right">
+    <div class="panelhead">
+      <div class="tabs">
+        <button class="tab on" data-pane="assets">素材</button>
+        <button class="tab" data-pane="outputs">产物</button>
+        <button class="tab" data-pane="timeline">时间线</button>
+      </div>
+      <div class="rail"><button class="iconbtn" id="btnRefreshPane" title="刷新">↻</button></div>
+    </div>
+    <div class="scroll"><div class="tabpane" id="pane"></div></div>
+  </aside>
 </div>
+
+<div class="dropveil" id="veil"><div>松开即可上传素材</div></div>
+<div class="modal" id="modal"><div class="box">
+  <header><h3 id="modalTitle">预览</h3>
+    <a class="mini" id="modalOpen" target="_blank">新标签打开</a>
+    <button class="mini" id="modalClose">关闭 Esc</button></header>
+  <video id="modalVideo" controls playsinline preload="metadata"></video>
+</div></div>
 <div class="toast" id="toast"></div>
 
 <script>
 const $=id=>document.getElementById(id);
-let sessionId=localStorage.getItem('va.session')||'';
-let controller=null, running=false;
-const thread=$('thread'), scroller=$('scroll');
-
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let sessionId=localStorage.getItem('va.session')||'';
+let controller=null, running=false, attachments=[];
+const scroller=$('scroll'), thread=$('thread'), input=$('input'), field=$('field');
+
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),2200)}
-function setStep(text,busy){const el=$('mStep');el.textContent=text;el.className='pill'+(busy?'':' ok')}
-function scrollDown(){scroller.scrollTop=scroller.scrollHeight}
-
+function setStep(text,busy){const el=$('mStep');el.textContent=text;el.className='pill'+(busy?' busy':'')}
+function down(){scroller.scrollTop=scroller.scrollHeight}
 function clearEmpty(){const e=thread.querySelector('.empty');if(e)e.remove()}
+function fmtSize(n){if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB'}
+function fmtDur(us){const s=Math.floor(us/1e6);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
 
+/* theme */
+document.documentElement.dataset.theme=localStorage.getItem('va.theme')||'light';
+$('btnTheme').onclick=()=>{
+  const n=document.documentElement.dataset.theme==='dark'?'light':'dark';
+  document.documentElement.dataset.theme=n;localStorage.setItem('va.theme',n);
+};
+/* panel toggles.
+   A hidden panel must never be a dead end: the toggles are always rendered with
+   their own text label, each reflects its visible/hidden state, and a "恢复布局"
+   button appears the moment anything is hidden as an unmistakable way back. */
+// Column widths per breakpoint. Every state names all three tracks, so hiding a
+// panel drops its track and the conversation reclaims the space, while
+// grid-column keeps each panel in its own track.
+function trackWidths(){
+  const narrow=window.matchMedia('(max-width:860px)').matches;
+  const mid=window.matchMedia('(max-width:1180px)').matches;
+  const pair=narrow?[200,250]:(mid?[220,290]:[246,320]);
+  return {l:pair[0]+'px', r:pair[1]+'px'};
+}
+function syncFrame(){
+  const l=localStorage.getItem('va.left')!=='0', r=localStorage.getItem('va.right')!=='0';
+  const w=trackWidths();
+  $('frame').style.gridTemplateColumns=(l?w.l:'0')+' minmax(0,1fr) '+(r?w.r:'0');
+  $('left').style.display=l?'':'none';
+  $('right').style.display=r?'':'none';
+
+  const bl=$('btnLeft'), br=$('btnRight');
+  bl.classList.toggle('on',l);br.classList.toggle('on',r);
+  bl.textContent=l?'◧ 左栏':'◨ 左栏';
+  bl.title=l?'隐藏左侧工作区':'显示左侧工作区';
+  br.textContent=r?'◨ 右栏':'◧ 右栏';
+  br.title=r?'隐藏右侧面板':'显示右侧面板';
+  $('btnResetLayout').classList.toggle('show',!l||!r);
+}
+function setPanels(left,right){
+  localStorage.setItem('va.left',left?'1':'0');
+  localStorage.setItem('va.right',right?'1':'0');
+  syncFrame();
+}
+$('btnLeft').onclick=()=>setPanels(localStorage.getItem('va.left')==='0',localStorage.getItem('va.right')!=='0');
+$('btnRight').onclick=()=>setPanels(localStorage.getItem('va.left')!=='0',localStorage.getItem('va.right')==='0');
+$('btnResetLayout').onclick=()=>{setPanels(true,true);toast('已恢复默认布局')};
+// Keyboard escape hatch for a layout the user cannot get out of by clicking.
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&(localStorage.getItem('va.left')==='0'||localStorage.getItem('va.right')==='0')){
+    setPanels(true,true);toast('已恢复默认布局');
+  }
+});
+syncFrame();
+window.addEventListener('resize',syncFrame);
+
+/* thread */
 function addMessage(role,text){
   clearEmpty();
-  const wrap=document.createElement('div');
-  wrap.className='msg '+(role==='user'?'user':'assistant');
-  wrap.innerHTML=`<div class="who">${role==='user'?'你':'AI'}</div><div class="bubble"><div class="txt"></div></div>`;
-  wrap.querySelector('.txt').textContent=text;
-  thread.appendChild(wrap);scrollDown();
-  return wrap.querySelector('.bubble');
+  const el=document.createElement('div');
+  el.className='msg '+(role==='user'?'user':'assistant');
+  el.innerHTML='<div class="who">'+(role==='user'?'你':'AI')+'</div><div class="bubble"><div class="txt"></div></div>';
+  el.querySelector('.txt').textContent=text;
+  thread.appendChild(el);down();
+  return el.querySelector('.bubble');
 }
-
-// One expandable card per tool call — the visible proof of what the agent did.
 function addToolCard(name,args){
   clearEmpty();
-  const d=document.createElement('details');
-  d.className='tool';
-  d.dataset.tool=name;
-  d.innerHTML=`<summary><span class="caret">▶</span><span class="nm">${esc(name)}</span><span class="arg">${esc(args)}</span><span class="st run">运行中</span></summary><pre>等待结果…</pre>`;
-  thread.appendChild(d);scrollDown();
-  return d;
+  const d=document.createElement('details');d.className='tool';
+  d.innerHTML='<summary><span class="caret">▶</span><span class="nm">'+esc(name)+'</span><span class="arg">'+esc(args)+'</span><span class="st run">运行中</span></summary><pre>等待结果…</pre>';
+  thread.appendChild(d);down();return d;
 }
 function settleToolCard(card,result,ok){
   card.querySelector('.st').className='st '+(ok?'ok':'err');
   card.querySelector('.st').textContent=ok?'完成':'失败';
-  let pretty=result;
-  try{pretty=JSON.stringify(JSON.parse(result),null,2)}catch(e){}
+  let pretty=result;try{pretty=JSON.stringify(JSON.parse(result),null,2)}catch(e){}
   card.querySelector('pre').textContent=pretty;
-  if(!ok) card.open=true;
-  scrollDown();
+  if(!ok)card.open=true;
+  down();
 }
-
+function addNotice(text){clearEmpty();const el=document.createElement('div');el.className='notice';el.textContent=text;thread.appendChild(el);down()}
 function addThinking(){
   clearEmpty();
-  const el=document.createElement('div');
-  el.className='steps';el.id='thinking';
+  const el=document.createElement('div');el.className='steps';el.id='thinking';
   el.innerHTML='<span class="spin"></span><span>正在思考…</span>';
-  thread.appendChild(el);scrollDown();
+  thread.appendChild(el);down();
 }
 const stopThinking=()=>{const e=$('thinking');if(e)e.remove()};
 
 function renderEmpty(){
-  thread.innerHTML=`<div class="empty">
-    <h1>从一个想法开始，而不是一条流水线。</h1>
-    <p>直接用中文说出你要什么。助手会自己调用工具：查素材、做内容理解、检索片段、组装时间线、提交渲染，每一步你都能展开看到它到底做了什么。</p>
-    <div class="chips">
-      <button class="chip">现在有哪些项目和素材？</button>
-      <button class="chip">先对素材做一次内容理解</button>
-      <button class="chip">找出讲数学的片段，剪成一分钟</button>
-      <button class="chip">把刚才的方案导出成 MP4</button>
-    </div></div>`;
-  thread.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{$('input').value=c.textContent;send()});
+  thread.innerHTML='<div class="empty"><h1>从一个想法开始，而不是一条流水线。</h1>'
+   +'<p>直接用中文说出你要什么，或者把视频拖进来。助手会自己调用工具：查素材、做内容理解、检索片段、组装时间线、提交渲染，每一步都能展开核对。</p>'
+   +'<div class="chips">'
+   +'<button class="chip">现在有哪些项目和素材？</button>'
+   +'<button class="chip">先对素材做一次内容理解</button>'
+   +'<button class="chip">找出讲数学的片段，剪成一分钟</button>'
+   +'<button class="chip">把刚才的方案导出成 MP4</button>'
+   +'</div></div>';
+  thread.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{input.value=c.textContent;send()});
 }
 
-async function loadConfig(){
-  try{
-    const r=await fetch('/v1/agent/config'),j=await r.json();
-    const c=j.result;
-    const cfg=$('mCfg');
-    if(c.configured){cfg.textContent='模型就绪';cfg.className='pill ok';$('fModel').textContent=c.model}
-    else{cfg.textContent='模型未配置';cfg.className='pill off';$('fModel').textContent='未配置';
-      const b=$('banner');b.style.display='block';
-      b.textContent='服务端没有读到文本模型配置，助手无法推理。请设置 AUTOCLIP_TEXT_BASE_URL / _MODEL / _API_KEY 后重启服务。'}
-    $('mTools').textContent='工具 '+c.tool_count;$('fTools').textContent=c.tool_count+' 个工具';
-  }catch(e){$('mCfg').textContent='无法读取配置';$('mCfg').className='pill off'}
-}
-
+/* sessions */
 async function loadSessions(){
   try{
-    const r=await fetch('/v1/agent/sessions'),j=await r.json();
-    const list=j.result||[], box=$('sessions');
-    box.innerHTML='';
-    list.forEach(s=>{
+    const j=await (await fetch('/v1/agent/sessions')).json();
+    const box=$('sessions');box.innerHTML='';
+    (j.result||[]).forEach(s=>{
       const d=document.createElement('div');
       d.className='sess'+(s.id===sessionId?' on':'');
-      d.innerHTML=`<b>${esc(s.preview||s.id.slice(0,18))}</b><span>${s.messages} 条消息${s.running?' · 进行中':''}</span>`;
-      d.onclick=()=>{sessionId=s.id;localStorage.setItem('va.session',s.id);replay(s.id);loadSessions()};
+      d.innerHTML='<b>'+esc(s.title||s.id.slice(0,20))+'</b><span>'
+        +(s.running?'<i class="dotlamp"></i>进行中':'已完成')+' · '+s.messages+' 条'
+        +'<i class="del" title="删除">✕</i></span>';
+      d.onclick=ev=>{
+        if(ev.target.classList.contains('del')){ev.stopPropagation();removeSession(s.id);return}
+        sessionId=s.id;localStorage.setItem('va.session',s.id);replay(s.id);
+      };
       box.appendChild(d);
     });
   }catch(e){}
 }
-
+async function removeSession(id){
+  if(!confirm('删除这个会话？'))return;
+  try{
+    await fetch('/v1/agent/sessions/'+encodeURIComponent(id),{method:'DELETE'});
+    if(id===sessionId){sessionId='';localStorage.removeItem('va.session');thread.innerHTML='';renderEmpty()}
+    loadSessions();
+  }catch(e){toast('删除失败')}
+}
 async function replay(id){
   thread.innerHTML='';
-  document.querySelectorAll('.sess').forEach(e=>e.classList.remove('on'));
   try{
-    const r=await fetch('/v1/agent/sessions/'+encodeURIComponent(id)),j=await r.json();
+    const j=await (await fetch('/v1/agent/sessions/'+encodeURIComponent(id))).json();
     const views=j.result||[];
-    if(!views.length){renderEmpty();return}
     sessionId=id;
+    if(!views.length){renderEmpty();return}
     views.forEach(v=>{
       if(v.role==='user')addMessage('user',v.text);
       else if(v.role==='assistant')addMessage('assistant',v.text);
       else if(v.role==='tool'){
-        addMessage('assistant','');
-        const card=addToolCard(v.tool_name,v.arguments||'{}');
-        settleToolCard(card,v.result||'',!!v.succeeded);
+        settleToolCard(addToolCard(v.tool_name,v.arguments||'{}'),v.result||'',!!v.succeeded);
       }
     });
-    scrollDown();
+    down();
   }catch(e){renderEmpty()}
   loadSessions();
 }
 
-// SSE over fetch: POST body plus a readable stream of events.
+/* tool calls from the panes */
+async function callTool(name,args){
+  const r=await fetch('/v1/tools/'+name,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(args||{})});
+  return await r.json();
+}
+
+/* left tree */
+async function loadTree(){
+  const tree=$('tree');
+  try{
+    const j=await callTool('project_list',{});
+    const projects=j.result||[];
+    if(!projects.length){tree.innerHTML='<div class="emptyhint">还没有项目。跟助手说一句，或把视频拖进来。</div>';return}
+    tree.innerHTML='';
+    projects.forEach(p=>{
+      const wrap=document.createElement('div');
+      const node=document.createElement('div');node.className='node';
+      node.innerHTML='<span class="caret">▶</span><span class="nname">'+esc(p.name||p.id)+'</span><span class="badge">'+(p.asset_count||0)+'</span>';
+      const kids=document.createElement('div');kids.className='children';kids.style.display='none';
+      node.onclick=async()=>{
+        const open=kids.style.display!=='none';
+        kids.style.display=open?'none':'block';
+        node.querySelector('.caret').textContent=open?'▶':'▼';
+        if(!open&&!kids.dataset.loaded)await loadAssets(p.id,kids);
+      };
+      wrap.appendChild(node);wrap.appendChild(kids);tree.appendChild(wrap);
+    });
+  }catch(e){tree.innerHTML='<div class="emptyhint">无法读取项目列表。</div>'}
+}
+async function loadAssets(projectId,container){
+  container.dataset.loaded='1';
+  try{
+    const j=await callTool('assets_list',{project_id:projectId});
+    const assets=Object.values(j.result||{});
+    container.innerHTML=assets.length
+      ? assets.map(a=>'<div class="leaf"><span>🎬</span><span class="nname">'+esc(a.id.replace('asset-','').slice(0,8))
+          +'</span><span class="meta">'+fmtDur(a.duration_us)+'</span></div>').join('')
+      : '<div class="leaf">（没有素材）</div>';
+  }catch(e){container.innerHTML='<div class="leaf">读取失败</div>'}
+}
+
+/* right pane */
+let paneName='assets';
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  paneName=t.dataset.pane;
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===t));
+  loadPane();
+});
+$('btnRefreshPane').onclick=loadPane;
+$('btnRefreshAll').onclick=()=>{loadSessions();loadTree();loadPane()};
+async function loadPane(){
+  const pane=$('pane');
+  if(paneName==='assets')return loadAssetsPane(pane);
+  if(paneName==='outputs')return loadOutputsPane(pane);
+  return loadTimelinePane(pane);
+}
+async function loadAssetsPane(pane){
+  try{
+    const projects=(await callTool('project_list',{})).result||[];
+    if(!projects.length){pane.innerHTML='<div class="emptyhint">还没有项目。</div>';return}
+    let html='';
+    for(const p of projects){
+      const assets=Object.values((await callTool('assets_list',{project_id:p.id})).result||{});
+      html+='<div class="card"><h3>'+esc(p.name||p.id)+' <span class="badge" style="font-size:10px;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:0 6px">'+assets.length+'</span></h3>';
+      html+=assets.length
+        ? assets.map(x=>'<div class="kv">'+esc(x.id.replace('asset-','').slice(0,12))+' · '+fmtDur(x.duration_us)+' · '+x.width+'×'+x.height+'</div>').join('')
+        : '<div class="kv">没有素材</div>';
+      html+='</div>';
+    }
+    pane.innerHTML=html;
+  }catch(e){pane.innerHTML='<div class="emptyhint">读取失败。</div>'}
+}
+async function loadOutputsPane(pane){
+  try{
+    const jobs=(await callTool('jobs_list',{})).result||[];
+    if(!jobs.length){pane.innerHTML='<div class="emptyhint">还没有渲染任务。跟助手说「导出成 MP4」即可。</div>';return}
+    pane.innerHTML=jobs.map(job=>{
+      const done=job.status==='completed',bad=job.status==='failed'||job.status==='cancelled';
+      return '<div class="card"><h3>'+(job.kind==='preview'?'预览':'导出')
+        +' <span class="pill '+(done?'ok':bad?'off':'busy')+'">'+esc(job.status)+'</span></h3>'
+        +'<div class="kv">'+esc((job.output||'').split(/[\\/]/).pop()||job.id)+'</div>'
+        +'<div class="bar"><i style="width:'+(job.progress||0)+'%"></i></div>'
+        +(done?playerCard(job):'')
+        +(job.error?'<div class="kv" style="color:var(--bad)">'+esc(job.error)+'</div>':'')
+        +'</div>';
+    }).join('');
+    await bindPlayers(pane);
+  }catch(e){pane.innerHTML='<div class="emptyhint">读取失败。</div>'}
+}
+async function loadTimelinePane(pane){
+  const id=localStorage.getItem('va.timeline');
+  if(!id){
+    pane.innerHTML='<div class="emptyhint">助手创建时间线后这里会显示片段。<br>可以先让它「组装一条时间线」。</div>'
+      +'<div class="card"><h3>还没有时间线</h3><div class="kv">对助手说「把这些片段组装成一条时间线」，或先切换到「素材」看看现成的素材。</div>'
+      +'<div style="margin-top:7px"><button class="layoutbtn" id="tlToAssets">◧ 去看素材</button></div></div>';
+    const b=$('tlToAssets');
+    if(b)b.onclick=()=>document.querySelector('.tab[data-pane="assets"]').click();
+    return;
+  }
+  try{
+    const t=(await callTool('timeline_get',{id})).result;
+    if(!t){pane.innerHTML='<div class="emptyhint">读不到时间线 '+esc(id)+'。</div>';return}
+    const total=(t.items||[]).reduce((n,i)=>n+i.source_out_us-i.source_in_us,0);
+    // The newest render of this timeline is what the user wants to watch; show
+    // the draft clips underneath it so the preview and the edit agree.
+    const jobs=(await callTool('jobs_list',{})).result||[];
+    const rendered=jobs.filter(j=>j.timeline_id===t.id&&j.status==='completed')
+                       .sort((a,b)=>String(b.updated_at).localeCompare(String(a.updated_at)));
+    const newest=rendered[0];
+    let html='<div class="card"><h3>'+esc(t.id)+' <span class="pill">v'+t.revision+'</span></h3>'
+      +'<div class="kv">'+t.width+'×'+t.height+' · '+t.fps_num+'/'+t.fps_den+' fps · 共 '+fmtDur(total)+'</div></div>';
+    if(newest){
+      html+='<div class="card"><h3>这条时间线的成片</h3>'+playerCard(newest)+'</div>';
+    }else{
+      html+='<div class="card"><h3>还没有成片</h3><div class="kv">这条时间线还没渲染。对助手说「导出成 MP4」，'
+        +'或点下面的按钮生成一个低开销预览。</div>'
+        +'<div class="playerbar"><button class="mini" id="tlPreview">▶ 生成预览</button></div></div>';
+    }
+    html+='<div class="card"><h3>片段（'+(t.items||[]).length+'）</h3>'
+      +((t.items||[]).map((i,n)=>'<div class="clip"><span class="t">'+(n+1)+'. '+fmtDur(i.source_in_us)+'–'+fmtDur(i.source_out_us)
+        +'</span><span>'+esc((i.asset_id||'').replace('asset-','').slice(0,8))+'</span></div>').join('')||'<div class="kv">空时间线</div>')
+      +'</div>';
+    pane.innerHTML=html;
+    await bindPlayers(pane);
+    const pv=$('tlPreview');
+    if(pv)pv.onclick=async()=>{
+      pv.disabled=true;pv.textContent='提交中…';
+      // A preview is cheap but still a render, so it asks before starting.
+      if(confirm('生成这条时间线的预览？')){
+        const r=await callTool('render_submit',{timeline_id:t.id,preview:true});
+        if(r.ok){toast('预览已提交，稍后刷新查看');setTimeout(loadPane,4000)}
+        else{toast('提交失败：'+((r.error&&r.error.message)||''));pv.disabled=false;pv.textContent='▶ 生成预览'}
+      }else{pv.disabled=false;pv.textContent='▶ 生成预览'}
+    };
+  }catch(e){pane.innerHTML='<div class="emptyhint">读取失败。</div>'}
+}
+
+/* config */
+async function loadConfig(){
+  try{
+    const c=(await (await fetch('/v1/agent/config')).json()).result;
+    const cfg=$('mCfg');
+    if(c.configured){cfg.textContent='模型就绪';cfg.className='pill ok'}
+    else{cfg.textContent='模型未配置';cfg.className='pill off';
+      const b=$('banner');b.style.display='block';
+      b.textContent='服务端没有读到文本模型配置。请设置 AUTOCLIP_TEXT_BASE_URL / _MODEL / _API_KEY 后重启服务。'}
+    $('mTools').textContent='工具 '+c.tool_count;
+  }catch(e){$('mCfg').textContent='无法读取配置';$('mCfg').className='pill off'}
+}
+
+/* attachments */
+function renderAttachments(){
+  const box=$('attachments');
+  box.style.marginBottom=attachments.length?'7px':'0';
+  box.innerHTML=attachments.map((a,i)=>
+    '<span class="attach">'+(a.kind==='subtitle'?'📝':a.kind==='video'?'🎬':'📄')
+    +'<b>'+esc(a.name)+'</b>'+fmtSize(a.size)+'<i class="x" data-i="'+i+'">✕</i></span>').join('');
+  box.querySelectorAll('.x').forEach(x=>x.onclick=()=>{attachments.splice(Number(x.dataset.i),1);renderAttachments()});
+}
+async function uploadFiles(files){
+  for(const f of files){
+    const fd=new FormData();fd.append('file',f,f.name);
+    toast('正在上传 '+f.name);
+    try{
+      const j=await (await fetch('/v1/agent/upload',{method:'POST',body:fd})).json();
+      if(!j.ok)throw new Error(j.error&&j.error.message||'上传失败');
+      attachments.push(j.result);renderAttachments();
+    }catch(e){toast('上传失败：'+e.message)}
+  }
+}
+let dragDepth=0;
+['dragenter','dragover'].forEach(n=>document.addEventListener(n,e=>{
+  if(!e.dataTransfer||!Array.from(e.dataTransfer.types||[]).includes('Files'))return;
+  e.preventDefault();$('veil').classList.add('on');field.classList.add('drag');
+}));
+document.addEventListener('dragleave',e=>{
+  if(e.relatedTarget)return;
+  $('veil').classList.remove('on');field.classList.remove('drag');
+});
+document.addEventListener('drop',e=>{
+  e.preventDefault();$('veil').classList.remove('on');field.classList.remove('drag');
+  const files=[...((e.dataTransfer&&e.dataTransfer.files)||[])].filter(f=>/\.(mp4|mov|m4v|srt|vtt)$/i.test(f.name));
+  if(!files.length){toast('只支持 MP4 / MOV / M4V / SRT / VTT');return}
+  uploadFiles(files);
+});
+
+/* Video preview. The artifact route streams a render with range support, so a
+   plain <video src> is enough for both inline and enlarged playback. A video
+   tool that cannot show you the video is not usable. */
+function artifactURL(jobId){return '/v1/artifacts/'+encodeURIComponent(jobId)}
+function openPlayer(job){
+  const url=artifactURL(job.id);
+  $('modalTitle').textContent=((job.kind==='preview')?'预览':'成片')+' · '+((job.output||'').split(/[\\/]/).pop()||job.id);
+  $('modalOpen').href=url;
+  const v=$('modalVideo');
+  if(v.dataset.job!==job.id){v.src=url;v.dataset.job=job.id;v.load()}
+  $('modal').classList.add('on');
+  const p=v.play();if(p&&p.catch)p.catch(()=>{});
+}
+function closePlayer(){
+  const v=$('modalVideo');
+  try{v.pause()}catch(e){}
+  $('modal').classList.remove('on');
+}
+$('modalClose').onclick=closePlayer;
+$('modal').addEventListener('click',e=>{if(e.target.id==='modal')closePlayer()});
+// Escape closes the player first; the layout reset only fires when none is open.
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'&&$('modal').classList.contains('on')){closePlayer();e.stopPropagation();}
+},true);
+
+// One reusable card: the player, an enlarge action, download, and the render's
+// own validation numbers so the preview is also evidence the render is sound.
+function playerCard(job,extra){
+  const v=job.validation||{};
+  const meta=[v.width&&v.height?v.width+'×'+v.height:null,
+              v.duration_us?'时长 '+(v.duration_us/1e6).toFixed(1)+' 秒':null,
+              v.frames?v.frames+' 帧':null].filter(Boolean).join(' · ');
+  return '<video class="player" controls playsinline preload="metadata" src="'+artifactURL(job.id)+'"></video>'
+    +'<div class="playerbar">'
+    +'<button class="mini" data-play="'+esc(job.id)+'">◱ 放大预览</button>'
+    +'<a class="mini" href="'+artifactURL(job.id)+'" download>↓ 下载</a>'
+    +'<a class="mini" href="'+artifactURL(job.id)+'" target="_blank">新标签打开</a>'
+    +(extra||'')
+    +'</div>'
+    +(meta?'<div class="kv" style="margin-top:6px">'+esc(meta)+(v.decode_passed?' · 解码校验通过':'')+'</div>':'');
+}
+async function bindPlayers(root){
+  const buttons=[...root.querySelectorAll('[data-play]')];
+  if(!buttons.length)return;
+  const jobs=(await callTool('jobs_list',{})).result||[];
+  buttons.forEach(b=>b.onclick=()=>{
+    const job=jobs.find(j=>j.id===b.dataset.play);
+    if(job)openPlayer(job);else toast('找不到这个渲染任务');
+  });
+}
+
+/* send */
 async function send(){
   if(running)return;
-  const input=$('input'), text=input.value.trim();
-  if(!text)return;
+  let text=input.value.trim();
+  if(!text&&!attachments.length)return;
+
+  // Uploaded files reach the agent as paths inside the message, so an import
+  // goes through the same tool the model already reasons about instead of a
+  // side channel the conversation cannot see.
+  if(attachments.length){
+    const videos=attachments.filter(a=>a.kind==='video');
+    const subs=attachments.filter(a=>a.kind==='subtitle');
+    const parts=[];
+    if(videos.length)parts.push('我刚上传了视频素材：'+videos.map(a=>a.path).join('、'));
+    if(subs.length)parts.push('以及字幕文件：'+subs.map(a=>a.path).join('、'));
+    const prefix=parts.join('；')+'。';
+    text=text?prefix+'我的要求是：'+text:prefix+'请先导入，然后做一次内容理解。';
+  }
+  attachments=[];renderAttachments();
   input.value='';input.style.height='auto';
-  addMessage('user',text);
-  addThinking();
+
+  addMessage('user',text);addThinking();
   running=true;
   $('send').textContent='停止';$('send').classList.add('stop');
   setStep('运行中',true);
-
-  const cards={};
-  let assistantBubble=null;
+  const cards={};let bubble=null;
   controller=new AbortController();
-
   try{
-    const resp=await fetch('/v1/agent/chat',{
-      method:'POST',
-      headers:{'content-type':'application/json'},
-      body:JSON.stringify({session_id:sessionId,message:text}),
-      signal:controller.signal
-    });
+    const resp=await fetch('/v1/agent/chat',{method:'POST',headers:{'content-type':'application/json'},
+      body:JSON.stringify({session_id:sessionId,message:text}),signal:controller.signal});
     if(!resp.ok||!resp.body){
-      let msg='请求失败 ('+resp.status+')';
-      try{const j=await resp.json();msg=j.error?.message||msg}catch(e){}
-      throw new Error(msg);
+      let m='请求失败 ('+resp.status+')';
+      try{const j=await resp.json();m=j.error&&j.error.message||m}catch(e){}
+      throw new Error(m);
     }
-    const reader=resp.body.getReader(),decoder=new TextDecoder();
-    let buf='';
+    const reader=resp.body.getReader(),dec=new TextDecoder();let buf='';
     for(;;){
       const {value,done}=await reader.read();
       if(done)break;
-      buf+=decoder.decode(value,{stream:true});
+      buf+=dec.decode(value,{stream:true});
       let i;
       while((i=buf.indexOf('\n\n'))>=0){
         const chunk=buf.slice(0,i);buf=buf.slice(i+2);
@@ -302,73 +741,66 @@ async function send(){
         chunk.split('\n').forEach(line=>{
           if(line.startsWith('event:'))name=line.slice(6).trim();
           else if(line.startsWith('data:'))data+=line.slice(5).trim();
-          else if(line.startsWith(':'))return; // keep-alive
         });
         if(!data)continue;
-        let payload;try{payload=JSON.parse(data)}catch(e){continue}
-
-        if(name==='session'){
-          if(payload.session_id){sessionId=payload.session_id;localStorage.setItem('va.session',sessionId)}
-          continue;
-        }
-        if(name==='end'){continue}
+        let ev;try{ev=JSON.parse(data)}catch(e){continue}
+        if(name==='session'){if(ev.session_id){sessionId=ev.session_id;localStorage.setItem('va.session',sessionId)}continue}
         if(name!=='agent')continue;
-
-        const ev=payload;
         if(ev.kind==='step'){setStep('第 '+ev.step+' 步',true);continue}
+        if(ev.kind==='compacted'){addNotice(ev.text);continue}
         if(ev.kind==='text'){
-          stopThinking();
-          if(!assistantBubble)assistantBubble=addMessage('assistant','');
-          assistantBubble.querySelector('.txt').textContent+=ev.text;
-          scrollDown();continue;
+          stopThinking();if(!bubble)bubble=addMessage('assistant','');
+          bubble.querySelector('.txt').textContent+=ev.text;down();continue;
         }
         if(ev.kind==='tool_start'){
-          stopThinking();
-          cards[ev.tool_call_id]=addToolCard(ev.tool_name,ev.arguments||'{}');
-          setStep('调用 '+ev.tool_name,true);
-          continue;
+          stopThinking();cards[ev.tool_call_id]=addToolCard(ev.tool_name,ev.arguments||'{}');
+          setStep('调用 '+ev.tool_name,true);continue;
         }
         if(ev.kind==='tool_end'){
-          const card=cards[ev.tool_call_id];
-          if(card)settleToolCard(card,ev.result||'',!!ev.succeeded);
-          assistantBubble=null; // prose after a tool starts a fresh bubble
-          addThinking();
-          continue;
+          const c=cards[ev.tool_call_id];if(c)settleToolCard(c,ev.result||'',!!ev.succeeded);
+          bubble=null;addThinking();rememberTimeline(ev.tool_name,ev.result);continue;
         }
         if(ev.kind==='error'){stopThinking();addMessage('assistant','⚠️ '+(ev.text||'出错了'));continue}
         if(ev.kind==='done'){
           stopThinking();
-          if(ev.text&&!assistantBubble)addMessage('assistant',ev.text);
-          else if(ev.text&&assistantBubble&&!assistantBubble.querySelector('.txt').textContent)assistantBubble.querySelector('.txt').textContent=ev.text;
+          if(ev.text&&!bubble)addMessage('assistant',ev.text);
+          else if(ev.text&&bubble&&!bubble.querySelector('.txt').textContent)bubble.querySelector('.txt').textContent=ev.text;
           continue;
         }
       }
     }
   }catch(e){
     stopThinking();
-    if(e.name==='AbortError'){addMessage('assistant','已停止这一轮。')}
-    else{addMessage('assistant','⚠️ '+(e.message||'连接中断'))}
+    addMessage('assistant',e.name==='AbortError'?'已停止这一轮。':'⚠️ '+(e.message||'连接中断'));
   }finally{
     running=false;controller=null;
     $('send').textContent='发送';$('send').classList.remove('stop');
-    setStep('待命',false);
-    stopThinking();
-    loadSessions();
+    setStep('待命',false);stopThinking();
+    loadSessions();loadTree();loadPane();
   }
 }
+// Track the newest timeline the agent created so the right pane can show it.
+function rememberTimeline(tool,result){
+  if(tool!=='timeline_create'&&tool!=='proposal_create')return;
+  try{
+    const t=JSON.parse(result).result;
+    const id=t&&(t.id||(t.timeline&&t.timeline.id));
+    if(id){localStorage.setItem('va.timeline',id)}
+  }catch(e){}
+}
 
-$('send').onclick=()=>{running?controller?.abort():send()};
-const input=$('input');
+$('send').onclick=()=>{running?controller&&controller.abort():send()};
 input.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send()}
 });
-input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,190)+'px'});
-$('newChat').onclick=()=>{sessionId='';localStorage.removeItem('va.session');thread.innerHTML='';renderEmpty();loadSessions()};
+input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,180)+'px'});
+$('btnNew').onclick=()=>{sessionId='';localStorage.removeItem('va.session');thread.innerHTML='';renderEmpty();loadSessions()};
 
 (async()=>{
   await loadConfig();
   renderEmpty();
-  if(sessionId){await replay(sessionId)}else{loadSessions()}
+  if(sessionId)await replay(sessionId);else loadSessions();
+  loadTree();loadPane();
 })();
 </script>
 </body>

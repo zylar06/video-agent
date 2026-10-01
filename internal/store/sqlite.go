@@ -51,7 +51,7 @@ func Open(dir string) (*Store, error) {
 	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fail(err)
 	}
-	if version > 3 {
+	if version > 4 {
 		return fail(errors.New("database is newer than this application"))
 	}
 	_, err = db.Exec(`
@@ -79,6 +79,17 @@ PRAGMA user_version=2;`)
 CREATE TABLE IF NOT EXISTS analysis_runs(project_id TEXT NOT NULL REFERENCES projects(id), asset_id TEXT NOT NULL, cache_key TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY(project_id,asset_id,cache_key), FOREIGN KEY(project_id,asset_id) REFERENCES assets(project_id,id));
 CREATE INDEX IF NOT EXISTS analysis_runs_asset ON analysis_runs(project_id,asset_id);
 PRAGMA user_version=3;`)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	if version < 4 {
+		_, err = db.Exec(`
+CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS session_messages(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, seq INTEGER NOT NULL, body BLOB NOT NULL, PRIMARY KEY(session_id,seq));
+CREATE TABLE IF NOT EXISTS session_state(session_id TEXT PRIMARY KEY REFERENCES sessions(id), body BLOB NOT NULL);
+CREATE INDEX IF NOT EXISTS session_messages_session ON session_messages(session_id,seq);
+PRAGMA user_version=4;`)
 		if err != nil {
 			return fail(err)
 		}

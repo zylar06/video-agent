@@ -147,17 +147,111 @@ var expensiveTools = map[string]string{
 
 ### 2.7 前端
 
-`chat.html` 是一个自包含页面（无构建、无依赖），对应 DSH 的布局思路：
+`chat.html` 是一个自包含页面（无构建、无依赖），采用 DSH 式的**三栏工作区**：
 
-- **左侧栏**：会话列表 + 新建对话 + 当前模型与工具数量。
-- **主区**：消息流；**每次工具调用渲染成一张可展开的卡片**（工具名 + 参数 + 状态 + JSON 结果），
+```
+┌────────────┬──────────────────────────┬─────────────┐
+│  工作区     │  会话                     │  素材/产物/  │
+│  会话列表   │  消息流 + 工具卡片         │  时间线      │
+│  素材树     │  输入区（拖入文件即上传）   │  （标签页）   │
+└────────────┴──────────────────────────┴─────────────┘
+```
+
+- **左栏**：会话列表（标题取自首条用户消息、显示条数、可删除）+ 项目→素材两层树（点开按需加载）。
+- **中栏**：消息流；**每次工具调用渲染成一张可展开的卡片**（工具名 + 参数 + 状态 + JSON 结果），
   失败自动展开。这是"agent 真的调了工具"最直观的证据。
-- **输入区**：Enter 发送 / Shift+Enter 换行；运行中按钮变「停止」，可中断。
-- 顶部实时显示到第几步、正在调用哪个工具。
+- **右栏**：三个标签页 —— 素材（项目及其实例）、产物（渲染任务 + 进度条 + 下载链接）、
+  时间线（片段与时间码）。
+- **输入区**：Enter 发送 / Shift+Enter 换行；运行中按钮变「停止」可中断；
+  **把文件拖到窗口任意位置即上传**。
+- **主题**：明/暗切换，与左右栏开关一起记在 localStorage。
+
+### 2.8 对话内上传素材
+
+上传**不是**一条绕过对话的旁路。流程刻意设计成：
+
+```
+拖入文件 → POST /v1/agent/upload 存盘并返回绝对路径
+        → 前端把路径拼进消息文本（"我刚上传了视频素材：<path>…"）
+        → 模型自己调用 assets_import
+```
+
+这样做的好处是导入动作**出现在对话里、可追溯**，并且复用模型已经理解的工具，
+不需要为上传单独写一套 agent 逻辑。
+
+上传组 `agent-uploads` 与经典页面的 `uploads` / `subtitles` **各管各的格式校验**
+（前者接受视频或字幕的并集）——有测试专门盯这一点，因为一旦三组塌缩成一条规则，
+两个界面里必然有一个会静默坏掉。
 
 ---
 
-## 3. 这一步顺带补上的能力
+## 3. 会话持久化、上下文压缩、并行工具调用
+
+### 3.1 会话持久化（SQLite v4）
+
+```
+sessions(id, title, created_at, updated_at)
+session_messages(session_id, seq, body)   -- 界面转录，逐条追加
+session_state(session_id, body)           -- 模型侧消息列表，可恢复
+```
+
+**为什么存两份**：转录（`domain.View`）和模型消息（`domain.Message`）回答的是不同问题。
+界面需要工具名、参数、结果摆成卡片；模型需要 `tool_call` 的 id 才能接受对应的工具结果。
+**转录无法反推模型消息**——一条请求了工具的 assistant 回合带着界面从不显示的 id。
+存两份是这个约束下最直接的解法。
+
+- 逐条追加转录：回合中途崩了，用户已经看到的内容不会丢。
+- `sessions` 表在 `session_state` 之外单独存在，是为了让侧栏不必解析任何 blob 就能排序。
+- 标题取自**第一条用户消息**（40 字截断），后续消息不会改标题。
+- 实测：服务重启后，会话从 SQLite 恢复；问"刚才你说第一个项目叫什么"，
+  模型**一步、零工具调用**直接答对 —— 证明恢复的不只是文字，而是可继续推理的上下文。
+
+### 3.2 上下文压缩
+
+一次 `analyze` 就能返回几百条证据，长对话必然撑爆窗口。压缩规则：
+
+- 只保留最近 `DefaultMaxHistoryMessages`（24）条**逐字**消息。
+- 更早的部分折叠成**一条 assistant 摘要**，列出用户先后提过的要求，并明确告诉模型
+  「如需具体数据请重新调用工具确认」。
+- **切点永远落在 user 消息上**，因此保留的尾部一定是完整的交换序列。
+
+这条约束是整个压缩逻辑里最要命的地方：**assistant 的工具调用和它的工具结果必须同生共死**。
+provider 会拒绝"工具结果找不到对应调用"的请求，反过来也一样。
+`TestCompactKeepsToolCallsPaired` 直接断言这个不变量——统计两侧 id 集合必须互相覆盖。
+
+折叠会让模型丢掉早先的工具结果，实测它因此**重新调用了一次 `project_list`**。
+这是这个设计可接受的代价（宁可多查一次，也不要基于过期数据下结论），
+但如果要减少重复调用，可以让摘要保留最近若干条关键结果（见 §5）。
+
+### 3.3 并行工具调用
+
+`ToolSpec` 增加 `ReadOnly` 标记：
+
+- **只读工具**（`project_list`、`assets_list`、`search`、`timeline_get`、`jobs_get` …）
+  可以在同一轮里并发执行。
+- **写入工具**（`project_create`、`assets_import`、`analyze`、`timeline_create`、
+  `edit_apply`、`render_submit` …）**必须独占**，否则 revision 号和生成的 id 会变得不确定。
+
+`dispatch` 的调度规则：
+
+1. 遇到只读调用 → 丢进并发组（受 `DefaultMaxParallelToolCalls`=4 限制）。
+2. 遇到写入调用 → **先等待在途的只读调用全部结束**，再单独执行。
+3. 结果按**模型给出的原始顺序**写回历史，而不是完成顺序 —— 打乱的 `tool_calls`
+   对模型更难跟随。
+
+`emit` 现在会被多个 goroutine 调用，因此内部用互斥锁串行化。
+
+**未知工具按不安全处理**：分类不了的东西不允许并发。
+
+测试：`TestConcurrencyPolicyKeepsWritersSerial`（读/写分类必须与预期一致，
+防止有人把写入工具误标成只读）、`TestDispatchPreservesCallOrderAndPairing`（顺序与配对）、
+`TestDispatchResultsAreIndexAddressed`（结果按索引而非追加）。
+全仓库 `go test -race ./...` 通过。
+
+
+---
+
+## 4. 顺带补上的能力
 
 - `Store.Projects()`：**原来没有任何列举项目的方法**。agent 只能靠猜 id，
   实测中它对 `project_get` 传空参数拿到 not_found，然后**误判"系统里没有项目"**并凭空建了一个。
@@ -165,7 +259,7 @@ var expensiveTools = map[string]string{
 
 ---
 
-## 4. 实测记录
+## 5. 实测记录
 
 真实模型 `qwen-plus` + 真实素材（B 站视频，299.8 秒 / 1920×1080）。
 
@@ -192,41 +286,61 @@ project_list → project_get → assets_list → analyze(visual:true)
 **界面**（真实 Chrome）：配置徽标「模型就绪」、工具 17、点建议问题后渲染出用户气泡 +
 `project_list` 工具卡片（状态"完成"、可展开 JSON）+ 助手归纳回答。
 
+**第二轮补做的四项，实测结果**
+
+| 能力 | 验证方式 | 结果 |
+|---|---|---|
+| 会话持久化 | 杀掉服务进程再启动，然后追问"刚才你说第一个项目叫什么" | **一步、零工具调用**答对，证明恢复的是可推理的上下文 |
+| 上下文压缩 | 把窗口临时调到 6 条，连发 5 轮 | 第 4 轮起发出 `compacted` 事件（"已折叠 4 条早期消息"），之后模型仍能正确回答项目数 |
+| 并行工具调用 | 只读/写入分类测试 + 顺序配对测试 + `go test -race ./...` | 全部通过，无数据竞争 |
+| 对话内上传 | 拖入 27MB 视频 → 前端拼路径 → 发消息 | 模型自主完成 `project_create → assets_import → analyze` |
+
+其中上传那一轮还顺带验证了**结果截断**：`analyze` 返回超长时回
+`{"notice":"结果过长已截断…","partial_json":…}`，模型读完继续正常收尾，没有崩。
+
+三栏工作区（真实 Chrome 实测）：`246px | 912px | 320px` 三栏布局、
+6 个项目节点 + 展开素材叶子、右栏 6 张素材卡 / 3 个渲染产物（带下载链接）、
+主题切换到 dark、右栏收起后变为 `246px | 1232px | 0`。
+
 ---
 
-## 5. 还没做的（按优先级）
+## 6. 还没做的（按优先级）
 
-1. **会话持久化**。现在会话在内存里，服务重启即丢失。DSH 用 JSONL + SQLite 落盘；
-   这里应该复用已有的 SQLite（新建 `sessions` / `messages` 表）。
-2. **上下文压缩**。长对话迟早撑爆窗口。DSH 有 `dsh-compaction`；这里至少要做工具结果修剪
-   （已有截断，但历史里的旧结果可以进一步摘要）。
-3. **并行工具调用**。同一轮里的多个无依赖调用现在串行执行。DSH 有
-   `isConcurrencySafe` 标记 + `maxParallelToolCalls`。
-4. **文件上传进对话**。现在导入素材仍然走经典页面；对话里应该能直接拖文件进来
-   （对应 DSH 的 attachment）。
-5. **工作区侧栏**。DSH 有文件树/终端/产物面板；这里对应"素材列表 + 时间线预览 + 成片"。
-6. **语义检索**。`search` 仍是子串匹配，用户说"讲数学的片段"能命中是因为字幕里恰好有"数学"。
-   真正的主题检索需要向量或让模型基于证据摘要选片。
+1. **压缩时保留最近的关键结果**。现在折叠会把早先的工具结果全部丢掉，
+   实测模型因此重新调用了一次 `project_list`。可以在摘要里保留最近 N 条结果的精简版。
+2. **语义检索**。`search` 仍是子串匹配——用户说"讲数学的片段"能命中，
+   只是因为字幕里恰好有"数学"这个词。真正的主题检索需要向量，或让模型基于证据摘要来选片。
+3. **对话内直接预览成片**。右栏产物目前只给下载链接，没有内嵌播放器。
+4. **工作区多项目切换**。现在素材树把所有项目平铺，项目多了会很长。
+5. **成本与 token 计量**。`ChatResult.Usage` 已经透传但没做统计，侧栏也没有显示。
+
 
 ---
 
-## 6. 与 DSH 的对应关系
+## 7. 与 DSH 的对应关系
 
 | DSH | 本项目 | 状态 |
 |---|---|---|
-| `dsh-agent-loop` | `agent.Runner.Turn` | ✅ |
+| `dsh-agent-loop`（模型→工具→回灌） | `agent.Runner.Turn` | ✅ |
 | `dsh-tools` + `defineTool` | `ToolSpecs` / `RunTool` | ✅（含防漂移测试） |
 | `dsh-tool-*` 各工具包 | 17 个剪辑工具 | ✅ |
 | `tools/execute` 前置/后置策略 | `confirmationRequired` 门控 | ✅（最小实现） |
+| `isConcurrencySafe` + `maxParallelToolCalls` | `ToolSpec.ReadOnly` + `dispatch` | ✅ |
+| `dsh-session-persistence` | `sessions` / `session_messages` / `session_state` | ✅ |
+| `dsh-compaction` | `History.Compact`（完整交换序列折叠） | ✅ |
+| `dsh-attachment` | `/v1/agent/upload` + 拖拽上传 | ✅ |
+| `dsh-client-ui-layout`（三栏 AppFrame） | `web/chat.html` 三栏工作区 | ✅ |
+| `dsh-client-ui-sidebar`（会话树） | 左栏会话列表 | ✅ |
+| `dsh-client-ui-sidebar-files`（文件树） | 左栏项目→素材树 | ✅ |
+| `dsh-client-ui-deliverables`（产物卡） | 右栏「产物」标签页 | ✅ |
 | `presentCall` / `presentResult` | 前端工具卡片 | ✅（前端渲染而非工具声明） |
-| `dsh-session-persistence` | — | ❌ 待做 |
-| `dsh-compaction` | 结果截断 | ⚠️ 部分 |
-| `maxParallelToolCalls` | — | ❌ 待做 |
-| `dsh-client-ui-chat` | `web/chat.html` | ✅ |
+| `dsh-compaction-tool-result-pruner` | 工具结果 16KB 截断 | ✅ |
+| `dsh-subagent` / `dsh-workflow` | — | ❌ 不在范围内 |
+| `dsh-terminal` / 权限预设 | — | ❌ 剪辑场景不需要 |
 
 ---
 
-## 7. 本地运行
+## 8. 本地运行
 
 ```powershell
 . E:\huabei\Activate-Venv.ps1          # 载入 AUTOCLIP_TEXT_* 等模型配置

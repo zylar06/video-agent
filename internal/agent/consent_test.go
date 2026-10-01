@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/zylar06/video-agent/internal/analysis/provider"
 )
 
 // An unapproved render must never reach the store. This is enforced in the loop,
@@ -77,8 +75,8 @@ func TestExpensiveToolRunsAfterUserConsent(t *testing.T) {
 // Consent must not be inferred from an unrelated early "好".
 func TestConsentRequiresAQuestionFirst(t *testing.T) {
 	history := NewHistory()
-	history.Append(provider.Message{Role: "user", Content: "好的"})
-	history.Append(provider.Message{Role: "assistant", Content: "我已经列出素材。"})
+	history.Append(Message{Role: "user", Content: "好的"})
+	history.Append(Message{Role: "assistant", Content: "我已经列出素材。"})
 	if history.UserConsented("render_submit", "") {
 		t.Fatal("a bare acknowledgement with no confirmation question must not authorise a render")
 	}

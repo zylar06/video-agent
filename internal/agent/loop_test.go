@@ -230,8 +230,8 @@ func TestTurnRejectsEmptyInput(t *testing.T) {
 
 func TestHistoryIsolateSystemPromptAndCopies(t *testing.T) {
 	h := NewHistory()
-	h.Append(provider.Message{Role: "user", Content: "一"})
-	h.Append(provider.Message{Role: "assistant", Content: "二"})
+	h.Append(Message{Role: "user", Content: "一"})
+	h.Append(Message{Role: "assistant", Content: "二"})
 
 	withSystem := h.Messages("你是剪辑助手")
 	if len(withSystem) != 3 || withSystem[0].Role != "system" {

@@ -18,7 +18,15 @@ type ToolSpec struct {
 	Name        string
 	Description string
 	Parameters  map[string]any
+	// ReadOnly marks a tool that only observes. Read-only calls may run
+	// concurrently with each other because they cannot race on project state.
+	// Anything that writes — evidence, timelines, edits, renders — stays
+	// serialized so revision numbers and generated ids stay deterministic.
+	ReadOnly bool
 }
+
+// ConcurrencySafe reports whether this tool may join a parallel group.
+func (s ToolSpec) ConcurrencySafe() bool { return s.ReadOnly }
 
 func obj(props map[string]any, required ...string) map[string]any {
 	if required == nil {
@@ -45,6 +53,7 @@ func (s *Service) ToolSpecs() []ToolSpec {
 			Name:        "project_list",
 			Description: "列出所有项目及其素材数量。用户问“有哪些项目/素材”或你不知道该用哪个项目时，先调用它，不要猜 id；asset_count 大于 0 的项目才有素材。",
 			Parameters:  obj(map[string]any{}),
+			ReadOnly:    true,
 		},
 		{
 			Name:        "project_create",
@@ -55,6 +64,7 @@ func (s *Service) ToolSpecs() []ToolSpec {
 			Name:        "project_get",
 			Description: "按 id 读取项目。不知道 id 时先用 project_list。",
 			Parameters:  obj(map[string]any{"id": str("项目 id")}, "id"),
+			ReadOnly:    true,
 		},
 		{
 			Name:        "assets_import",
@@ -65,6 +75,7 @@ func (s *Service) ToolSpecs() []ToolSpec {
 			Name:        "assets_list",
 			Description: "列出项目下已导入的素材。不确定素材 id 时先调用它。",
 			Parameters:  obj(map[string]any{"project_id": str("项目 id")}, "project_id"),
+			ReadOnly:    true,
 		},
 		{
 			Name:        "analyze",
@@ -96,6 +107,10 @@ func (s *Service) ToolSpecs() []ToolSpec {
 				"project_id": str("项目 id"), "query": str("检索关键词，尽量用素材里出现过的原话"),
 				"asset_ids": arr("限定素材，可省略", "string"), "limit": num("返回条数上限 1..100"),
 			}, "project_id", "query", "limit"),
+			// search only reads evidence. (The chat path can additionally trigger
+			// analysis, but that is a cache-keyed upsert and does not race on
+			// project state.)
+			ReadOnly: true,
 		},
 		{
 			Name:        "timeline_create",
@@ -114,11 +129,13 @@ func (s *Service) ToolSpecs() []ToolSpec {
 			Name:        "timeline_get",
 			Description: "读取时间线当前版本或指定版本。改动前先读，拿到 revision 才能提交编辑。",
 			Parameters:  obj(map[string]any{"id": str("时间线 id"), "revision": num("可选，指定版本号")}, "id"),
+			ReadOnly:    true,
 		},
 		{
 			Name:        "timeline_history",
 			Description: "列出时间线的全部历史版本，用于回退或向用户说明改过什么。",
 			Parameters:  obj(map[string]any{"id": str("时间线 id")}, "id"),
+			ReadOnly:    true,
 		},
 		{
 			Name:        "proposal_create",
@@ -148,11 +165,13 @@ func (s *Service) ToolSpecs() []ToolSpec {
 			Name:        "jobs_get",
 			Description: "查询渲染任务状态与进度，完成后可拿到产物地址。",
 			Parameters:  obj(map[string]any{"id": str("任务 id")}, "id"),
+			ReadOnly:    true,
 		},
 		{
 			Name:        "jobs_list",
 			Description: "列出全部任务。用户问“渲染好了吗”而不知道 job id 时使用。",
 			Parameters:  obj(map[string]any{}),
+			ReadOnly:    true,
 		},
 		{
 			Name:        "jobs_cancel",

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/zylar06/video-agent/internal/analysis/provider"
 	"github.com/zylar06/video-agent/internal/app"
@@ -33,6 +34,11 @@ func (s *Session) TryBegin() error {
 	return nil
 }
 
+func (s *Session) Running() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running
+}
 func (s *Session) End() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -69,51 +75,96 @@ func NewRuntime(a *app.App, model provider.OpenAIText) *Runtime {
 	return &Runtime{App: a, Model: model, System: SystemPrompt, MaxSteps: DefaultMaxSteps, sessions: map[string]*Session{}}
 }
 
-// Session returns the existing session or creates one, so a client can start
-// chatting without a separate handshake.
+// Session returns the live session, restoring it from storage on first use so a
+// restarted service resumes the conversation instead of silently starting over.
 func (r *Runtime) Session(id string) *Session {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if s, ok := r.sessions[id]; ok {
+		r.mu.Unlock()
 		return s
 	}
 	s := &Session{ID: id, History: NewHistory()}
 	r.sessions[id] = s
-	r.order = append(r.order, id)
+	r.mu.Unlock()
+
+	if r.App != nil && r.App.Store != nil {
+		_ = r.App.Store.CreateSession(id, "")
+		if stored, err := r.App.Store.SessionMessages(id); err == nil && len(stored) > 0 {
+			state, stateErr := r.App.Store.SessionState(id)
+			if stateErr != nil {
+				// A corrupt state blob must not also lose what the user sees.
+				state = nil
+			}
+			s.History.SetRestored(state, stored)
+		}
+	}
+	s.History.AttachSink(sessionSink{runtime: r, id: id})
 	return s
 }
 
-// Summary describes one session for a sidebar.
-type Summary struct {
-	ID       string `json:"id"`
-	Running  bool   `json:"running"`
-	Messages int    `json:"messages"`
-	Preview  string `json:"preview,omitempty"`
+// sessionSink adapts the store to the loop's persistence hook.
+type sessionSink struct {
+	runtime *Runtime
+	id      string
 }
 
-// Sessions lists known sessions, newest first.
+func (s sessionSink) AppendMessage(view View) error {
+	if s.runtime.App == nil || s.runtime.App.Store == nil {
+		return nil
+	}
+	return s.runtime.App.Store.AppendSessionMessage(s.id, view)
+}
+
+func (s sessionSink) SaveState(messages []Message) error {
+	if s.runtime.App == nil || s.runtime.App.Store == nil {
+		return nil
+	}
+	return s.runtime.App.Store.SaveSessionState(s.id, messages)
+}
+
+// Summary describes one conversation for a sidebar.
+type Summary struct {
+	ID        string    `json:"id"`
+	Running   bool      `json:"running"`
+	Messages  int       `json:"messages"`
+	Title     string    `json:"title,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// Sessions lists conversations, most recently updated first. It reads from the
+// store when available so conversations survive a restart, and merges live
+// running state for sessions currently in memory.
 func (r *Runtime) Sessions() []Summary {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]Summary, 0, len(r.order))
-	for i := len(r.order) - 1; i >= 0; i-- {
-		s := r.sessions[r.order[i]]
-		if s == nil {
-			continue
-		}
-		s.mu.Lock()
-		running := s.running
-		s.mu.Unlock()
-		summary := Summary{ID: s.ID, Running: running, Messages: s.History.Len()}
-		view := s.History.View()
-		for _, v := range view {
-			if v.Role == "user" && v.Text != "" {
-				summary.Preview = truncate(v.Text, 40)
-				break
+	byID := map[string]Summary{}
+	if r.App != nil && r.App.Store != nil {
+		if stored, err := r.App.Store.Sessions(); err == nil {
+			for _, info := range stored {
+				byID[info.ID] = Summary{ID: info.ID, Messages: info.Messages, Title: info.Title, UpdatedAt: info.UpdatedAt}
 			}
 		}
+	}
+	r.mu.Lock()
+	for id, s := range r.sessions {
+		summary := byID[id]
+		summary.ID = id
+		summary.Running = s.Running()
+		if n := s.History.Len(); n > summary.Messages {
+			summary.Messages = n
+		}
+		byID[id] = summary
+	}
+	r.mu.Unlock()
+
+	out := make([]Summary, 0, len(byID))
+	for _, summary := range byID {
 		out = append(out, summary)
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].UpdatedAt.Equal(out[j].UpdatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
 	return out
 }
 
@@ -135,12 +186,27 @@ func (r *Runtime) Run(ctx context.Context, sessionID, message string, emit Emit)
 		MaxSteps: r.MaxSteps,
 		Consent:  session.History.UserConsented,
 	}
-	return runner.Turn(ctx, session.History, message, emit)
+	err := runner.Turn(ctx, session.History, message, emit)
+	// Persist the model-facing history even when the turn failed partway: the
+	// work already done is exactly what a resumed conversation needs.
+	_ = sessionSink{runtime: r, id: sessionID}.SaveState(session.History.MessagesCopy())
+	return err
 }
 
 // Transcript returns the renderable history of a session.
 func (r *Runtime) Transcript(sessionID string) []View {
 	return r.Session(sessionID).History.View()
+}
+
+// DeleteSession drops a conversation from memory and storage.
+func (r *Runtime) DeleteSession(id string) error {
+	r.mu.Lock()
+	delete(r.sessions, id)
+	r.mu.Unlock()
+	if r.App == nil || r.App.Store == nil {
+		return nil
+	}
+	return r.App.Store.DeleteSession(id)
 }
 
 func truncate(s string, n int) string {
