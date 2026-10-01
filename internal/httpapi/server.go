@@ -24,7 +24,7 @@ import (
 	"github.com/zylar06/video-agent/internal/store"
 )
 
-//go:embed web/index.html web/chat.html
+//go:embed web/chat.html
 var webFiles embed.FS
 
 type uiAnalysisTask struct {
@@ -62,15 +62,6 @@ func New(a *app.App) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		data, err := webFiles.ReadFile("web/index.html")
-		if err != nil {
-			http.Error(w, "web UI unavailable", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(data)
-	})
-	mux.HandleFunc("GET /chat.html", func(w http.ResponseWriter, r *http.Request) {
 		data, err := webFiles.ReadFile("web/chat.html")
 		if err != nil {
 			http.Error(w, "chat UI unavailable", http.StatusInternalServerError)
