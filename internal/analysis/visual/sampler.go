@@ -17,11 +17,8 @@ type Sampler struct {
 }
 
 func (s Sampler) normalized() Sampler {
-	if s.MaxFrames <= 0 {
-		s.MaxFrames = 48
-	}
 	if s.IntervalUS <= 0 {
-		s.IntervalUS = 10_000_000
+		s.IntervalUS = 1_000_000
 	}
 	if s.IntervalUS < 1_000_000 {
 		s.IntervalUS = 1_000_000
@@ -35,6 +32,12 @@ func (s Sampler) Sample(ctx context.Context, tools media.Tools, asset domain.Med
 	s = s.normalized()
 	if err := asset.Validate(); err != nil {
 		return nil, err
+	}
+	if s.MaxFrames <= 0 {
+		s.MaxFrames = int((asset.DurationUS + s.IntervalUS - 1) / s.IntervalUS)
+	}
+	if s.MaxFrames > 1800 {
+		return nil, fmt.Errorf("full visual analysis currently supports at most 30 minutes at 1fps")
 	}
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, err

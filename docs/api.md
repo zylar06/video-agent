@@ -50,7 +50,7 @@ bin/video-agent --data data/demo serve --addr 127.0.0.1:8090
 | `render_submit` | `timeline_id`、可选 `revision`、`preview`、`filename` | 立即返回 `queued` job；文件名只能是 `.mp4` 基名 |
 | `jobs_get`、`jobs_list`、`jobs_cancel` | 任务 ID（list 无输入） | 查询、列表或取消任务 |
 
-分析使用 OpenAI-compatible HTTP 接口作为可选 provider。ASR 支持 `VIDEO_AGENT_ASR_*` 或 `AUTOCLIP_ASR_*`；配置 `VIDEO_AGENT_VISION_*` 或 `AUTOCLIP_VISION_*` 启用逐帧描述；`AUTOCLIP_TEXT_*` 提供自然语言理解与方案解释，不会被误当成 ASR。qwen3-asr-flash 经 chat completions 接收分段音频，其他兼容 ASR 可经 audio transcriptions 接收音频。provider 失败会持久化为 failed，不会伪装成完成。
+分析使用可选 provider。ASR 支持 `VIDEO_AGENT_ASR_*` 或 `AUTOCLIP_ASR_*`；配置 `VIDEO_AGENT_VISION_*` 或 `AUTOCLIP_VISION_*` 启用全片 1fps 的分批画面描述；`AUTOCLIP_TEXT_*` 提供自然语言理解与方案解释，不会被误当成 ASR。`qwen-audio-*` 使用百炼原生多模态端点和 SSE 逐句时间戳；`qwen3-asr-flash` 仍经 chat completions 接收分段音频，其他兼容 ASR 可经 audio transcriptions 接收音频。provider 失败会持久化为 failed，不会伪装成完成。
 
 对话请求示例：
 

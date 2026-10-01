@@ -23,4 +23,4 @@ GoClip 的高光不是让模型直接输出剪辑时间线，而是：
 
 Video Agent 第一版复用了其中最重要的边界：`Evidence` 是唯一来源、对话只产生意图和候选、编辑必须经过 proposal/确认。后续再补候选评分、局部视觉复核和自动生成时间线。
 
-文本模型配置优先读取 `VIDEO_AGENT_TEXT_*`，否则读取 GoClip 的 `AUTOCLIP_TEXT_*`；视觉分析优先读取 `VIDEO_AGENT_VISION_*`，否则读取 `AUTOCLIP_VISION_*`。百炼可使用 `qwen-plus`、`qwen-vl-plus` 和 `qwen3-asr-flash`；ASR 使用 `AUTOCLIP_ASR_*`，并在服务端将音频切成小于五分钟的片段。
+文本模型配置优先读取 `VIDEO_AGENT_TEXT_*`，否则读取 GoClip 的 `AUTOCLIP_TEXT_*`；视觉分析优先读取 `VIDEO_AGENT_VISION_*`，否则读取 `AUTOCLIP_VISION_*`。百炼可使用 `qwen-plus`、`qwen-vl-plus` 和 `qwen-audio-3.1-asr-flash`；ASR 使用 `AUTOCLIP_ASR_*`，服务端将音频切成不超过四分钟的片段并读取逐句时间戳。

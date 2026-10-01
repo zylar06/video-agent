@@ -51,7 +51,7 @@ func Open(dir string) (*Store, error) {
 	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
 		return fail(err)
 	}
-	if version > 3 {
+	if version > 4 {
 		return fail(errors.New("database is newer than this application"))
 	}
 	_, err = db.Exec(`
@@ -79,6 +79,15 @@ PRAGMA user_version=2;`)
 CREATE TABLE IF NOT EXISTS analysis_runs(project_id TEXT NOT NULL REFERENCES projects(id), asset_id TEXT NOT NULL, cache_key TEXT NOT NULL, body BLOB NOT NULL, PRIMARY KEY(project_id,asset_id,cache_key), FOREIGN KEY(project_id,asset_id) REFERENCES assets(project_id,id));
 CREATE INDEX IF NOT EXISTS analysis_runs_asset ON analysis_runs(project_id,asset_id);
 PRAGMA user_version=3;`)
+		if err != nil {
+			return fail(err)
+		}
+	}
+	if version < 4 {
+		_, err = db.Exec(`
+CREATE TABLE IF NOT EXISTS draft_plans(id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), asset_id TEXT NOT NULL, version INTEGER NOT NULL, body BLOB NOT NULL, FOREIGN KEY(project_id,asset_id) REFERENCES assets(project_id, id));
+CREATE INDEX IF NOT EXISTS draft_plans_project_asset ON draft_plans(project_id,asset_id);
+PRAGMA user_version=4;`)
 		if err != nil {
 			return fail(err)
 		}
@@ -237,6 +246,38 @@ func (s *Store) Evidence(project string, assetIDs []string) ([]domain.Evidence, 
 	return out, rows.Err()
 }
 
+// CurrentEvidence isolates the latest completed analysis from historical runs.
+func (s *Store) CurrentEvidence(project, asset string) ([]domain.Evidence, error) {
+	items, err := s.Evidence(project, []string{asset})
+	if err != nil {
+		return nil, err
+	}
+	runs, err := s.AnalysisRuns(project, asset)
+	if err != nil {
+		return nil, err
+	}
+	var latest domain.AnalysisRun
+	for _, r := range runs {
+		if r.Status == "completed" && r.UpdatedAt.After(latest.UpdatedAt) {
+			latest = r
+		}
+	}
+	if latest.CacheKey == "" {
+		return items, nil
+	}
+	allowed := map[string]bool{}
+	for _, id := range latest.EvidenceIDs {
+		allowed[id] = true
+	}
+	out := []domain.Evidence{}
+	for _, e := range items {
+		if allowed[e.ID] {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
 // SearchEvidence is a deterministic offline lexical search. It is deliberately
 // transparent: P2 can replace scoring without changing P3's source contracts.
 func (s *Store) SearchEvidence(project, query string, assetIDs []string, limit int) ([]catalog.SearchResult, error) {
@@ -323,6 +364,59 @@ func (s *Store) AnalysisRuns(project, asset string) ([]domain.AnalysisRun, error
 	}
 	return out, rows.Err()
 }
+
+func (s *Store) CreateDraft(p domain.DraftPlan) (domain.DraftPlan, error) {
+	asset, err := s.Asset(p.ProjectID, p.AssetID)
+	if err != nil {
+		return p, err
+	}
+	if err = p.Validate(asset); err != nil {
+		return p, err
+	}
+	p.CreatedAt = time.Now().UTC()
+	p.UpdatedAt = p.CreatedAt
+	b, err := json.Marshal(p)
+	if err != nil {
+		return p, err
+	}
+	_, err = s.db.Exec("INSERT INTO draft_plans(id,project_id,asset_id,version,body) VALUES(?,?,?,?,?)", p.ID, p.ProjectID, p.AssetID, p.Version, b)
+	return p, err
+}
+
+func (s *Store) Draft(id string) (p domain.DraftPlan, err error) {
+	err = decode(s.db.QueryRow("SELECT body FROM draft_plans WHERE id=?", id), &p)
+	return
+}
+
+func (s *Store) UpdateDraft(p domain.DraftPlan, baseVersion int) (domain.DraftPlan, error) {
+	if baseVersion < 1 || p.Version != baseVersion+1 {
+		return p, ErrConflict
+	}
+	asset, err := s.Asset(p.ProjectID, p.AssetID)
+	if err != nil {
+		return p, err
+	}
+	if err = p.Validate(asset); err != nil {
+		return p, err
+	}
+	p.UpdatedAt = time.Now().UTC()
+	b, err := json.Marshal(p)
+	if err != nil {
+		return p, err
+	}
+	r, err := s.db.Exec("UPDATE draft_plans SET version=?,body=? WHERE id=? AND version=?", p.Version, b, p.ID, baseVersion)
+	if err != nil {
+		return p, err
+	}
+	n, err := r.RowsAffected()
+	if err != nil {
+		return p, err
+	}
+	if n != 1 {
+		return p, ErrConflict
+	}
+	return p, nil
+}
 func (s *Store) CreateTimeline(t domain.TimelineRevision) error {
 	if t.Revision != 1 {
 		return errors.New("new timeline must start at revision 1")
@@ -347,6 +441,52 @@ func (s *Store) CreateTimeline(t domain.TimelineRevision) error {
 		return err
 	}
 	if _, err = tx.Exec("INSERT INTO revisions VALUES(?,?,?)", t.ID, 1, b); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// ConfirmDraft atomically freezes the reviewed version and creates its timeline.
+func (s *Store) ConfirmDraft(p domain.DraftPlan, t domain.TimelineRevision) error {
+	assets, err := s.Assets(p.ProjectID)
+	if err != nil {
+		return err
+	}
+	if err = t.Validate(assets); err != nil {
+		return err
+	}
+	base := p.Version
+	p.Version++
+	p.Status = "confirmed"
+	p.UpdatedAt = time.Now().UTC()
+	body, err := json.Marshal(p)
+	if err != nil {
+		return err
+	}
+	timeline, err := json.Marshal(t)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec("UPDATE draft_plans SET version=?,body=? WHERE id=? AND version=? AND json_extract(body,'$.status')='draft'", p.Version, body, p.ID, base)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrConflict
+	}
+	if _, err = tx.Exec("INSERT INTO timelines VALUES(?,?,?)", t.ID, t.ProjectID, 1); err != nil {
+		return err
+	}
+	if _, err = tx.Exec("INSERT INTO revisions VALUES(?,?,?)", t.ID, 1, timeline); err != nil {
 		return err
 	}
 	return tx.Commit()

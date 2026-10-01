@@ -54,7 +54,9 @@ func New(s *store.Store, tools media.Tools) *Service {
 	visionConfig := provider.ConfigFromEnvAliases("VIDEO_AGENT_VISION", "AUTOCLIP_VISION")
 	var asrProvider ASRProvider
 	if asrConfig.BaseURL != "" && asrConfig.Model != "" && asrConfig.APIKey != "" {
-		if strings.HasPrefix(asrConfig.Model, "qwen") {
+		if strings.HasPrefix(asrConfig.Model, "qwen-audio-") {
+			asrProvider = provider.QwenAudioASR{Config: asrConfig, Tools: tools}
+		} else if strings.HasPrefix(asrConfig.Model, "qwen") {
 			asrProvider = provider.QwenASR{Config: asrConfig, Tools: tools}
 		} else {
 			asrProvider = provider.OpenAITranscriber{Config: asrConfig}
@@ -111,67 +113,146 @@ func (s *Service) Analyze(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if old, err := s.Store.AnalysisRun(req.ProjectID, req.AssetID, key); err == nil && old.Status == "completed" {
-		return s.resultFromRun(old)
+	previous, previousErr := s.Store.AnalysisRun(req.ProjectID, req.AssetID, key)
+	if previousErr == nil && previous.Status == "completed" {
+		return s.resultFromRun(previous)
 	}
 	run := domain.AnalysisRun{ProjectID: req.ProjectID, AssetID: req.AssetID, AssetContentHash: asset.ContentHash, CacheKey: key, AnalyzerVersion: req.AnalyzerVersion, Provider: req.Provider, Parameters: parameters, Status: "running", Stages: map[string]string{}}
 	if _, err = s.Store.PutAnalysisRun(run); err != nil {
 		return Result{}, err
 	}
 	all := []domain.Evidence{}
-	if req.SubtitlePath != "" {
+	if previousErr == nil && previous.Stages["subtitle"] == "completed" {
+		priorIDs := map[string]bool{}
+		for _, id := range previous.EvidenceIDs {
+			priorIDs[id] = true
+		}
+		// Runs created before stage-level evidence IDs were persisted have an
+		// empty list. The matching cache key, provider and analyzer version
+		// still make their transcript evidence safe to resume once.
+		legacyPartialRun := len(priorIDs) == 0
+		if existing, existingErr := s.Store.Evidence(req.ProjectID, []string{req.AssetID}); existingErr == nil {
+			for _, e := range existing {
+				if (priorIDs[e.ID] || (legacyPartialRun && e.Provider == req.Provider && e.AnalyzerVersion == req.AnalyzerVersion)) && e.Transcript != "" {
+					all = append(all, e)
+					run.EvidenceIDs = append(run.EvidenceIDs, e.ID)
+				}
+			}
+		}
+		if len(all) > 0 {
+			run.Stages["subtitle"] = "completed"
+		}
+	}
+	if req.SubtitlePath != "" && run.Stages["subtitle"] != "completed" {
 		run.Stages["subtitle"] = "running"
 		_, _ = s.Store.PutAnalysisRun(run)
 		cues, parseErr := asr.ParseFile(ctx, req.SubtitlePath)
 		if parseErr != nil {
 			return s.fail(run, "subtitle", parseErr)
 		}
-		for _, e := range asr.ToEvidence(req.ProjectID, asset, cues, req.Provider, req.AnalyzerVersion) {
+		for _, e := range asr.ToEvidence(req.ProjectID, asset, cues, req.Provider, req.AnalyzerVersion, key) {
 			if _, err = s.Store.PutEvidence(e); err != nil {
 				return s.fail(run, "subtitle", err)
 			}
 			all = append(all, e)
+			run.EvidenceIDs = append(run.EvidenceIDs, e.ID)
 		}
 		run.Stages["subtitle"] = "completed"
-	} else if s.ASR != nil {
+	} else if s.ASR != nil && run.Stages["subtitle"] != "completed" {
 		run.Stages["subtitle"] = "running"
 		_, _ = s.Store.PutAnalysisRun(run)
 		cues, transcribeErr := s.ASR.Transcribe(ctx, asset)
 		if transcribeErr != nil {
 			return s.fail(run, "subtitle", transcribeErr)
 		}
-		for _, e := range asr.ToEvidence(req.ProjectID, asset, cues, req.Provider, req.AnalyzerVersion) {
+		for _, e := range asr.ToEvidence(req.ProjectID, asset, cues, req.Provider, req.AnalyzerVersion, key) {
 			if _, err = s.Store.PutEvidence(e); err != nil {
 				return s.fail(run, "subtitle", err)
 			}
 			all = append(all, e)
+			run.EvidenceIDs = append(run.EvidenceIDs, e.ID)
 		}
 		run.Stages["subtitle"] = "completed"
-	} else {
+	} else if run.Stages["subtitle"] != "completed" {
 		run.Stages["subtitle"] = "model_unavailable"
 	}
 	if req.Visual {
+		pauses, pauseErr := visual.Pauses(ctx, s.Tools, asset)
+		if pauseErr != nil {
+			return s.fail(run, "pauses", pauseErr)
+		}
+		for _, e := range pauses {
+			e.ID = cacheEvidenceID(e.ID, key)
+			e.CacheKey = key
+			if _, err = s.Store.PutEvidence(e); err != nil {
+				return s.fail(run, "pauses", err)
+			}
+			all = append(all, e)
+			run.EvidenceIDs = append(run.EvidenceIDs, e.ID)
+		}
+		run.Stages["pauses"] = "completed"
 		run.Stages["visual"] = "running"
 		_, _ = s.Store.PutAnalysisRun(run)
 		frameDir := filepath.Join(s.Store.Dir, "analysis", asset.ID, key, "frames")
-		frames, sampleErr := (visual.Sampler{}).Sample(ctx, s.Tools, asset, frameDir)
+		var frames []domain.Evidence
+		var sampleErr error
+		if req.Parameters["mode"] == "deep" {
+			frames, sampleErr = (visual.Sampler{}).Sample(ctx, s.Tools, asset, frameDir)
+		} else {
+			frames, sampleErr = visual.Overview(ctx, s.Tools, asset, frameDir)
+		}
 		if sampleErr != nil {
 			return s.fail(run, "visual", sampleErr)
 		}
 		if s.Vision != nil {
-			summaries, describeErr := s.Vision.Describe(ctx, frames)
-			if describeErr != nil {
-				return s.fail(run, "visual", describeErr)
+			for start := 0; start < len(frames); start += 8 {
+				batch := frames[start:min(start+8, len(frames))]
+				missing := []domain.Evidence{}
+				existing, _ := s.Store.Evidence(req.ProjectID, []string{req.AssetID})
+				cached := map[string]string{}
+				for _, e := range existing {
+					if e.CacheKey == key {
+						cached[e.ID] = e.VisualSummary
+					}
+				}
+				for i := range batch {
+					batch[i].VisualSummary = cached[cacheEvidenceID(batch[i].ID, key)]
+					if batch[i].VisualSummary == "" {
+						missing = append(missing, batch[i])
+					}
+				}
+				if len(missing) > 0 {
+					summaries, describeErr := s.Vision.Describe(ctx, missing)
+					if describeErr != nil {
+						return s.fail(run, "visual", describeErr)
+					}
+					for i := range batch {
+						if batch[i].VisualSummary == "" {
+							batch[i].VisualSummary = summaries[batch[i].ID]
+						}
+					}
+				}
+				for _, e := range batch {
+					e.ID = cacheEvidenceID(e.ID, key)
+					e.CacheKey = key
+					if _, err = s.Store.PutEvidence(e); err != nil {
+						return s.fail(run, "visual", err)
+					}
+				}
+				run.Stages["visual_progress"] = fmt.Sprintf("%d/%d", min(start+8, len(frames)), len(frames))
+				_, _ = s.Store.PutAnalysisRun(run)
 			}
-			for i := range frames {
-				frames[i].VisualSummary = summaries[frames[i].ID]
-			}
+		}
+		for i := range frames {
+			frames[i].ID = cacheEvidenceID(frames[i].ID, key)
+			frames[i].CacheKey = key
 		}
 		for _, e := range frames {
 			if _, err = s.Store.PutEvidence(e); err != nil {
 				return s.fail(run, "visual", err)
 			}
 			all = append(all, e)
+			run.EvidenceIDs = append(run.EvidenceIDs, e.ID)
 		}
 		run.Stages["visual"] = "completed"
 	}
@@ -184,9 +265,6 @@ func (s *Service) Analyze(ctx context.Context, req Request) (Result, error) {
 	if len(all) == 0 {
 		return s.fail(run, "analysis", errors.New("model provider unavailable: provide subtitle_path or enable a visual sampler"))
 	}
-	for _, e := range all {
-		run.EvidenceIDs = append(run.EvidenceIDs, e.ID)
-	}
 	run.Status = "completed"
 	if _, err = s.Store.PutAnalysisRun(run); err != nil {
 		return Result{}, err
@@ -196,6 +274,9 @@ func (s *Service) Analyze(ctx context.Context, req Request) (Result, error) {
 
 func (s *Service) fail(run domain.AnalysisRun, stage string, err error) (Result, error) {
 	run.Status = "failed"
+	if errors.Is(err, context.Canceled) {
+		run.Status = "cancelled"
+	}
 	run.Error = err.Error()
 	if run.Stages == nil {
 		run.Stages = map[string]string{}
@@ -203,6 +284,13 @@ func (s *Service) fail(run domain.AnalysisRun, stage string, err error) (Result,
 	run.Stages[stage] = "failed"
 	_, _ = s.Store.PutAnalysisRun(run)
 	return Result{Run: run}, err
+}
+
+func cacheEvidenceID(id, key string) string {
+	if len(key) < 12 {
+		return id
+	}
+	return id + "-" + key[:12]
 }
 
 func (s *Service) resultFromRun(run domain.AnalysisRun) (Result, error) {

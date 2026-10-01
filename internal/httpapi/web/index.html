@@ -7,7 +7,7 @@
     :root{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;color:oklch(24% .025 258);background:oklch(97% .008 255);--ink:oklch(24% .025 258);--muted:oklch(46% .025 258);--line:oklch(87% .015 258);--panel:oklch(100% 0 0);--accent:oklch(52% .20 264);--soft:oklch(94% .035 264);--good:oklch(48% .13 153);--bad:oklch(51% .18 26)}*{box-sizing:border-box}body{margin:0;min-width:320px}.shell{max-width:1120px;margin:auto;padding:24px}header{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--line);padding:16px 0 24px}.brand{font-size:20px;font-weight:750;letter-spacing:-.02em}.brand span,.time{color:var(--accent)}.local,.hint,.meta{font-size:13px;color:var(--muted)}main{padding:48px 0}.intro{max-width:680px;margin-bottom:48px}h1{font-size:32px;line-height:1.15;letter-spacing:-.025em;margin:0 0 12px;text-wrap:balance}h2{font-size:17px;margin:0}p{color:var(--muted);line-height:1.6;margin:0}.flow{display:grid;grid-template-columns:190px minmax(0,1fr);border-top:1px solid var(--line)}.step{display:contents}.label{padding:24px 24px 24px 0;border-bottom:1px solid var(--line);font-size:14px;color:var(--muted)}.label b{display:block;color:var(--ink);font-size:15px;margin-bottom:5px}.body{border-left:1px solid var(--line);border-bottom:1px solid var(--line);padding:24px 0 24px 24px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:24px}.row,.actions{display:flex;gap:12px;align-items:end;flex-wrap:wrap}.field{display:grid;gap:6px;flex:1;min-width:220px}label{font-size:14px;font-weight:650}input,textarea{width:100%;font:inherit;color:var(--ink);border:1px solid oklch(75% .02 258);border-radius:8px;background:white;padding:11px 12px;min-height:44px}textarea{resize:vertical;min-height:88px}input:focus-visible,textarea:focus-visible,button:focus-visible{outline:3px solid oklch(70% .15 264/.48);outline-offset:2px}button{min-height:44px;border:0;border-radius:8px;padding:10px 14px;background:var(--accent);color:white;font:inherit;font-weight:700;cursor:pointer;transition:background 180ms ease,transform 180ms ease}button:hover{background:oklch(45% .20 264)}button:active{transform:translateY(1px)}button.secondary{background:var(--soft);color:oklch(37% .16 264)}button:disabled{opacity:.55;cursor:wait}.drop{display:grid;place-items:center;min-height:150px;border:2px dashed oklch(68% .07 264);border-radius:10px;background:oklch(98% .012 264);text-align:center;padding:20px}.drop.drag{background:var(--soft);border-color:var(--accent)}.drop strong{display:block;margin-bottom:5px}.notice{padding:12px 14px;border-radius:8px;background:oklch(96% .025 264);color:oklch(32% .10 264);font-size:14px;line-height:1.5}.asset,.proposal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 0}.asset-name{font-weight:700}.status{font-size:14px;color:var(--muted);min-height:22px;margin-top:12px}.status.good{color:var(--good)}.status.error{color:var(--bad)}.hidden{display:none!important}.clip-list{display:grid;gap:8px;margin:16px 0}.clip{display:flex;gap:12px;padding:12px;border-radius:8px;background:oklch(97% .006 258)}.time{font-weight:750;white-space:nowrap;font-variant-numeric:tabular-nums}.clip p{font-size:14px;color:var(--ink)}.video{width:100%;max-height:460px;background:oklch(17% .015 258);border-radius:10px;margin-top:12px}@media(max-width:720px){.shell{padding:16px}.local{display:none}main{padding-top:32px}.flow,.step{display:block}.label{padding:24px 0 8px}.body{border-left:0;padding:0 0 24px}.panel{padding:16px}h1{font-size:27px}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}
   </style>
 </head>
-<body><div class="shell"><header><div class="brand">Video <span>Agent</span></div><div class="local">仅在这台电脑处理你的素材</div></header>
+<body><div class="shell"><header><div class="brand">Video <span>Agent</span></div><div class="local">仅在这台电脑处理你的素材 · <a href="/chat.html" style="color:var(--accent);text-decoration:none">打开对话助手 →</a></div></header>
 <main><section class="intro"><h1>从素材到第一版剪辑，只需要说清楚你想保留什么。</h1><p>上传视频后，助手会基于字幕或本地配置的语音模型找到有来源的片段。每次修改都要由你确认。</p></section>
 <div class="flow">
 <section class="step"><div class="label"><b>开始一个项目</b>给这支视频起个名字。</div><div class="body"><div class="panel"><div class="row"><div class="field"><label for="projectName">项目名称</label><input id="projectName" value="我的视频" maxlength="80"></div><button id="create">创建项目</button></div><div id="projectStatus" class="status" aria-live="polite"></div></div></div></section>
@@ -33,4 +33,87 @@ $('propose').onclick=async()=>{try{$('propose').disabled=true;status('proposalSt
 async function confirm(){try{state.timeline=await api('/v1/ui/proposals/confirm',state.timeline);status('proposalStatus','方案已确认。现在可以生成预览。','good');$('render').innerHTML='<h2>先看预览，满意后再导出</h2><div class="actions" style="margin-top:12px"><button id="preview">生成预览</button><button class="secondary" id="export">导出 MP4</button></div><div id="renderStatus" class="status" aria-live="polite"></div><div id="player"></div>';$('preview').onclick=()=>render(true);$('export').onclick=()=>render(false)}catch(e){status('proposalStatus',e.message,'error')}}
 async function render(preview){try{status('renderStatus',preview?'正在生成预览…':'正在导出 MP4…');const job=await api('/v1/tools/render_submit',{timeline_id:state.timeline.id,preview});await poll(job.id,preview)}catch(e){status('renderStatus',e.message,'error')}}
 async function poll(id,preview){const r=await fetch(`/v1/jobs/${id}`),j=await r.json();if(!j.ok)throw new Error(j.error?.message||'无法读取任务');const job=j.result;if(job.status==='completed'){status('renderStatus',preview?'预览已生成。':'导出已完成。','good');const u=`/v1/artifacts/${id}`;$('player').innerHTML=preview?`<video class="video" controls src="${u}"></video>`:`<a href="${u}" download><button>下载 MP4</button></a>`;return}if(job.status==='failed'||job.status==='cancelled')throw new Error(job.error||'渲染未完成');status('renderStatus',`正在处理… ${job.progress||0}%`);setTimeout(()=>poll(id,preview).catch(e=>status('renderStatus',e.message,'error')),1000)}
+</script>
+<script>
+(()=>{
+  state.draft=null;
+  const fmt=us=>time(Number(us));
+  const request=async path=>{const r=await fetch(path),j=await r.json();if(!j.ok)throw new Error(j.error?.message||'操作没有完成');return j.result};
+  async function pollAnalysis(id){
+    try{
+      const task=await request('/v1/ui/analysis/'+id);
+      if(task.status==='completed'){
+        status('analysisStatus','分析完成，找到 '+task.evidence.length+' 条多模态证据。现在可以说明你想剪成多长。','good');
+        $('message').disabled=false;$('propose').disabled=false;return;
+      }
+      if(task.status==='failed'||task.status==='cancelled')throw new Error(task.error||'分析未完成');
+      status('analysisStatus',task.status==='queued'?'分析任务已排队…':'正在进行字幕、画面和镜头分析…');
+      setTimeout(()=>pollAnalysis(id),1000);
+    }catch(e){status('analysisStatus',e.message,'error');$('analyze').disabled=false}
+  }
+  $('analyze').onclick=async()=>{
+    try{
+      $('analyze').disabled=true;
+      status('analysisStatus','正在创建融合分析任务…');
+      const task=await api('/v1/ui/analyze',{project_id:state.project.id,asset_id:state.asset.id,subtitle_path:state.subtitlePath});
+      state.analysisTask=task.id;
+      pollAnalysis(task.id);
+    }catch(e){status('analysisStatus',e.message,'error');$('analyze').disabled=false}
+  };
+  function button(label,fn,secondary){
+    const b=document.createElement('button');b.textContent=label;
+    if(secondary)b.className='secondary';
+    b.onclick=fn;return b;
+  }
+  function renderDraft(){
+    const root=$('proposal');root.replaceChildren();
+    const active=state.draft.candidates.filter(c=>!c.deleted);
+    const head=document.createElement('div');head.className='proposal-head';
+    const title=document.createElement('div');const h=document.createElement('h2');h.textContent='待确认的精细剪辑方案';
+    const p=document.createElement('p');p.textContent='可在确认前调整入出点、删除不需要的片段或锁定必须保留的片段。';
+    title.append(h,p);const total=document.createElement('span');total.className='time';
+    total.textContent=Math.round(active.reduce((n,c)=>n+c.end_us-c.start_us,0)/1e6)+' 秒';head.append(title,total);root.append(head);
+    const list=document.createElement('div');list.className='clip-list';
+    for(const c of active){
+      const card=document.createElement('article');card.className='clip';
+      const info=document.createElement('div');info.style.flex='1';
+      const label=document.createElement('div');label.className='time';label.textContent=fmt(c.start_us)+' – '+fmt(c.end_us)+(c.locked?' · 已锁定':'');
+      const reason=document.createElement('p');reason.textContent=(c.reasons||[]).join('；');
+      info.append(label,reason);
+      const controls=document.createElement('div');controls.className='actions';controls.style.marginTop='8px';
+      const start=document.createElement('input');start.type='range';start.min=String(c.min_start_us);start.max=String(c.end_us-2000000);start.value=String(c.start_us);start.step='33333';start.setAttribute('aria-label','调整片段开始时间');
+      const end=document.createElement('input');end.type='range';end.min=String(c.start_us+2000000);end.max=String(c.max_end_us);end.value=String(c.end_us);end.step='33333';end.setAttribute('aria-label','调整片段结束时间');
+      const applyBounds=()=>apply(c.id,'adjust_bounds',Number(start.value),Number(end.value));
+      start.onchange=applyBounds;end.onchange=applyBounds;
+      controls.append(start,end,button(c.locked?'解除锁定':'锁定',()=>apply(c.id,c.locked?'unlock':'lock'),true),button('删除',()=>apply(c.id,'delete'),true));
+      info.append(controls);card.append(info);list.append(card);
+    }
+    root.append(list);
+    const actions=document.createElement('div');actions.className='actions';
+    actions.append(button('确认并创建时间线',confirmDraft),button('继续修改描述',()=>$('message').focus(),true));
+    root.append(actions);root.classList.remove('hidden');
+  }
+  async function apply(candidateID,kind,startUS,endUS){
+    try{
+      status('proposalStatus','正在保存局部调整…');
+      state.draft=await api('/v1/ui/proposals/'+state.draft.id+'/operations',{base_version:state.draft.version,edit:{candidate_id:candidateID,kind:kind,start_us:startUS,end_us:endUS}});
+      renderDraft();status('proposalStatus','调整已保存；确认前仍可继续修改。','good');
+    }catch(e){status('proposalStatus',e.message,'error')}
+  }
+  $('propose').onclick=async()=>{
+    try{
+      $('propose').disabled=true;status('proposalStatus','正在融合字幕、画面与镜头证据…');
+      const x=await api('/v1/ui/proposals',{project_id:state.project.id,asset_id:state.asset.id,message:$('message').value});
+      state.draft=x.draft;renderDraft();status('proposalStatus',x.reply,'good');
+    }catch(e){status('proposalStatus',e.message,'error')}finally{$('propose').disabled=false}
+  };
+  async function confirmDraft(){
+    try{
+      state.timeline=await api('/v1/ui/proposals/'+state.draft.id+'/confirm',{version:state.draft.version});
+      status('proposalStatus','方案已确认。现在可以生成预览。','good');
+      $('render').innerHTML='<h2>先看预览，满意后再导出</h2><div class="actions" style="margin-top:12px"><button id="preview">生成预览</button><button class="secondary" id="export">导出 MP4</button></div><div id="renderStatus" class="status" aria-live="polite"></div><div id="player"></div>';
+      $('preview').onclick=()=>render(true);$('export').onclick=()=>render(false);
+    }catch(e){status('proposalStatus',e.message,'error')}
+  }
+})();
 </script></body></html>
