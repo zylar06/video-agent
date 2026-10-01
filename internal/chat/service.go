@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/zylar06/video-agent/internal/analysis"
 	"github.com/zylar06/video-agent/internal/analysis/provider"
 	"github.com/zylar06/video-agent/internal/catalog"
+	"github.com/zylar06/video-agent/internal/domain"
 	"github.com/zylar06/video-agent/internal/store"
 )
 
@@ -65,11 +67,50 @@ func (s Service) Handle(ctx context.Context, req Request) (Result, error) {
 	}
 	if intent.Query != "" {
 		items, err := s.Store.SearchEvidence(req.ProjectID, intent.Query, []string{req.AssetID}, 12)
-		if err == nil {
+		if err == nil && len(items) > 0 {
 			return Result{Reply: reply(intent, len(items)), Intent: intent, Evidence: items}, nil
 		}
 	}
+	// A keyword that matches nothing must not dead-end the request: requests such
+	// as "一分钟以上" carry a duration but no searchable term. Fall back to the
+	// strongest available clips so the user still gets a reviewable plan.
+	if items := s.fallbackCandidates(req.ProjectID, req.AssetID, 12); len(items) > 0 {
+		intent.Goal = "best"
+		return Result{Reply: reply(intent, len(items)), Intent: intent, Evidence: items}, nil
+	}
 	return Result{Reply: reply(intent, 0), Intent: intent}, nil
+}
+
+// fallbackCandidates ranks evidence for requests that carry no usable keyword.
+func (s Service) fallbackCandidates(project, asset string, limit int) []catalog.SearchResult {
+	all, err := s.Store.Evidence(project, []string{asset})
+	if err != nil {
+		return nil
+	}
+	return rankEvidence(all, limit)
+}
+
+// rankEvidence prefers clips the visual analyzer confirmed, then longer coverage.
+func rankEvidence(all []domain.Evidence, limit int) []catalog.SearchResult {
+	if len(all) == 0 {
+		return nil
+	}
+	ranked := append([]domain.Evidence(nil), all...)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		vi, vj := ranked[i].VisualSummary != "", ranked[j].VisualSummary != ""
+		if vi != vj {
+			return vi
+		}
+		return ranked[i].EndUS-ranked[i].StartUS > ranked[j].EndUS-ranked[j].StartUS
+	})
+	if limit > 0 && len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+	out := make([]catalog.SearchResult, 0, len(ranked))
+	for _, e := range ranked {
+		out = append(out, catalog.SearchResult{Evidence: e, Reason: "selected from all available evidence"})
+	}
+	return out
 }
 
 var durationRE = regexp.MustCompile(`([0-9]+)\s*(分钟|分|秒)`)
@@ -118,6 +159,9 @@ func reply(i Intent, count int) string {
 	}
 	if i.Goal == "preview" {
 		return "我可以生成当前剪辑方案的预览；请先确认候选片段。"
+	}
+	if i.Goal == "best" {
+		return "没有找到与「" + i.Query + "」匹配的原话，已改用可信度最高的 " + strconv.Itoa(count) + " 个片段。你可以直接确认，或换一个字幕里出现过的词。"
 	}
 	if count == 0 {
 		return "我暂时没有找到可核对的候选片段，可以换一个关键词或提供字幕。"
