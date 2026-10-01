@@ -207,9 +207,46 @@ function settleToolCard(card,result,ok){
     try{
       const payload=JSON.parse(result), value=payload.result||payload;
       if(value && value.id && Array.isArray(value.items)) mountTimelineEditor(card,value);
+      else if(value && value.id && Array.isArray(value.candidates)) mountDraftEditor(card,value);
     }catch(e){}
   }
   scrollDown();
+}
+
+function mountDraftEditor(card,draft){
+  if(card._timelineEditor)card._timelineEditor.remove();
+  const editor=document.createElement('section');editor.className='timeline-editor';
+  const head=document.createElement('div');head.className='te-head';
+  const title=document.createElement('span');title.textContent='局部编辑 · 待确认方案';
+  const rev=document.createElement('span');rev.className='te-rev';rev.textContent='草稿 v'+draft.version;head.append(title,rev);editor.append(head);
+  (draft.candidates||[]).filter(c=>!c.deleted).forEach(item=>{
+    const row=document.createElement('div');row.className='te-clip';
+    const line=document.createElement('div');line.className='te-line';
+    const id=document.createElement('span');id.className='te-id';id.textContent=item.id;
+    const stamp=document.createElement('span');stamp.className='te-time';stamp.textContent=time(item.start_us)+' – '+time(item.end_us);line.append(id,stamp);row.append(line);
+    const range=document.createElement('input');range.type='range';range.min=String(item.min_start_us);range.max=String(item.end_us-2000000);range.step='33333';range.value=String(item.start_us);range.setAttribute('aria-label','调整候选片段起点');
+    const end=document.createElement('input');end.type='range';end.min=String(item.start_us+2000000);end.max=String(item.max_end_us);end.step='33333';end.value=String(item.end_us);end.setAttribute('aria-label','调整候选片段终点');
+    const controls=document.createElement('div');controls.className='te-controls';
+    const apply=document.createElement('button');apply.textContent='保存入出点';apply.disabled=!!item.locked;apply.onclick=()=>applyDraftEdit(draft,{candidate_id:item.id,kind:'adjust_bounds',start_us:Number(range.value),end_us:Number(end.value)},editor);
+    const lock=document.createElement('button');lock.textContent=item.locked?'解锁':'锁定';lock.onclick=()=>applyDraftEdit(draft,{candidate_id:item.id,kind:item.locked?'unlock':'lock'},editor);
+    const del=document.createElement('button');del.textContent='删除';del.disabled=!!item.locked;del.onclick=()=>applyDraftEdit(draft,{candidate_id:item.id,kind:'delete'},editor);
+    controls.append(apply,lock,del);row.append(range,end,controls);editor.append(row);
+  });
+  const confirm=document.createElement('button');confirm.textContent='确认生成时间线';confirm.onclick=async()=>{
+    confirm.disabled=true;
+    try{const r=await fetch('/v1/tools/draft_confirm',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:draft.id,version:draft.version})}),j=await r.json();if(!j.ok)throw new Error(j.error?.message||'确认失败');mountTimelineEditor(card,j.result);toast('已生成时间线，可继续局部编辑')}catch(e){toast(e.message);confirm.disabled=false}
+  };
+  const action=document.createElement('div');action.className='te-controls';action.append(confirm);editor.append(action);
+  card.after(editor);card._timelineEditor=editor;
+}
+
+async function applyDraftEdit(draft,edit,editor){
+  const buttons=[...editor.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
+  try{
+    const r=await fetch('/v1/tools/draft_edit',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({id:draft.id,base_version:draft.version,...edit})}),j=await r.json();
+    if(!j.ok)throw new Error(j.error?.message||'局部编辑失败');
+    mountDraftEditor(editor.previousElementSibling,j.result);toast('局部编辑已保存，草稿 v'+j.result.version);
+  }catch(e){toast(e.message);buttons.forEach(b=>b.disabled=false)}
 }
 
 function mountTimelineEditor(card,timeline){
