@@ -18,7 +18,6 @@ import (
 	"github.com/zylar06/video-agent/internal/analysis"
 	"github.com/zylar06/video-agent/internal/analysis/provider"
 	"github.com/zylar06/video-agent/internal/app"
-	"github.com/zylar06/video-agent/internal/chat"
 	"github.com/zylar06/video-agent/internal/domain"
 	"github.com/zylar06/video-agent/internal/planner"
 	"github.com/zylar06/video-agent/internal/store"
@@ -75,20 +74,6 @@ func New(a *app.App) http.Handler {
 	})
 	mux.HandleFunc("GET /v1/tools", func(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: s.Names()})
-	})
-	mux.HandleFunc("POST /v1/chat", func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		var input chat.Request
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&input); err != nil {
-			write(w, http.StatusBadRequest, invalid(err))
-			return
-		}
-		result, err := (chat.Service{Store: a.Store, Text: provider.OpenAIText{Config: provider.ConfigFromEnvAliases("VIDEO_AGENT_TEXT", "AUTOCLIP_TEXT")}, Analyzer: analysis.New(a.Store, a.Tools)}).Handle(r.Context(), input)
-		if err != nil {
-			write(w, http.StatusBadRequest, invalid(err))
-			return
-		}
-		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: result})
 	})
 	// The UI routes are deliberately local implementation details. They provide
 	// a safe browser workflow without exposing filesystem paths or tool JSON.
@@ -229,22 +214,22 @@ func New(a *app.App) http.Handler {
 		}
 		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: task.snapshot()})
 	})
+	// This is the automation entry point for the reviewable-draft flow. It shares
+	// planner.CreateFromQuery with the draft_create agent tool, so the two cannot
+	// drift; it is no longer a separate natural-language conversation path.
 	mux.HandleFunc("POST /v1/ui/proposals", func(w http.ResponseWriter, r *http.Request) {
-		var in chat.Request
+		var in struct {
+			ProjectID  string `json:"project_id"`
+			AssetID    string `json:"asset_id"`
+			Query      string `json:"query"`
+			DurationUS int64  `json:"duration_us"`
+			Limit      int    `json:"limit,omitempty"`
+		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
 			write(w, http.StatusBadRequest, invalid(err))
 			return
 		}
-		result, err := (chat.Service{Store: a.Store, Text: provider.OpenAIText{Config: provider.ConfigFromEnvAliases("VIDEO_AGENT_TEXT", "AUTOCLIP_TEXT")}}).Handle(r.Context(), in)
-		if err != nil {
-			write(w, http.StatusBadRequest, invalid(err))
-			return
-		}
-		if result.Intent.DurationUS <= 0 {
-			write(w, http.StatusUnprocessableEntity, agent.Envelope{APIVersion: agent.APIVersion, OK: false, Error: &agent.APIError{Code: "invalid_request", Message: "请说明目标时长，例如“剪成 60 秒”。"}})
-			return
-		}
-		draft, err := (planner.Service{Store: a.Store}).Create("draft-"+app.ID(), in.ProjectID, in.AssetID, result.Intent.Query, result.Intent.DurationUS, result.Evidence)
+		draft, err := (planner.Service{Store: a.Store}).CreateFromQuery("draft-"+app.ID(), in.ProjectID, in.AssetID, in.Query, in.DurationUS, in.Limit)
 		if err == nil {
 			draft, err = analysis.New(a.Store, a.Tools).Refine(r.Context(), draft)
 		}
@@ -252,7 +237,7 @@ func New(a *app.App) http.Handler {
 			write(w, http.StatusBadRequest, invalid(err))
 			return
 		}
-		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: map[string]any{"reply": result.Reply, "intent": result.Intent, "draft": draft}})
+		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: map[string]any{"draft": draft}})
 	})
 	mux.HandleFunc("GET /v1/ui/proposals/{id}", func(w http.ResponseWriter, r *http.Request) {
 		draft, err := a.Store.Draft(r.PathValue("id"))
@@ -369,6 +354,10 @@ func New(a *app.App) http.Handler {
 		}
 		http.ServeContent(w, r, filepath.Base(j.Output), info.ModTime(), f)
 	})
+	// The conversation UI is the only product surface. Register its streaming
+	// agent routes alongside the legacy-compatible tool endpoints so the page
+	// can inspect model configuration and run turns.
+	agentRoutes(mux, a)
 	return securityHeaders(mux)
 }
 
