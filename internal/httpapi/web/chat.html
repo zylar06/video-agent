@@ -80,6 +80,19 @@
   .tool .st.err{color:var(--bad);border-color:color-mix(in oklab,var(--bad) 40%,var(--line))}
   .tool pre{margin:0;padding:11px 13px;border-top:1px solid var(--line);background:oklch(98.8% .003 258);font-family:ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.55;white-space:pre-wrap;word-break:break-word;max-height:340px;overflow:auto}
   .tool .caret{color:var(--muted);font-size:10px;flex:none}
+  .timeline-editor{margin:9px 0 0 0;border:1px solid var(--line);border-radius:10px;background:var(--panel);overflow:hidden}
+  .timeline-editor .te-head{display:flex;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line);font-size:12px;font-weight:650}
+  .timeline-editor .te-rev{color:var(--muted);font-weight:500}
+  .te-clip{padding:11px 12px;border-bottom:1px solid var(--line-soft)}
+  .te-clip:last-child{border-bottom:0}
+  .te-line{display:flex;align-items:center;gap:8px;font-size:12px}
+  .te-id{font-family:ui-monospace,Menlo,monospace;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+  .te-time{font-variant-numeric:tabular-nums;color:var(--accent);white-space:nowrap}
+  .te-clip input[type=range]{width:100%;accent-color:var(--accent);height:22px}
+  .te-controls{display:flex;gap:7px;margin-top:6px}
+  .te-controls button{font:inherit;font-size:11px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);cursor:pointer}
+  .te-controls button:hover{border-color:var(--accent);background:var(--accent-soft)}
+  .te-controls button:disabled{opacity:.5;cursor:not-allowed}
 
   .steps{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:12px;padding:2px 0 0 37px}
   .spin{width:11px;height:11px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:sp .7s linear infinite}
@@ -190,7 +203,48 @@ function settleToolCard(card,result,ok){
   try{pretty=JSON.stringify(JSON.parse(result),null,2)}catch(e){}
   card.querySelector('pre').textContent=pretty;
   if(!ok) card.open=true;
+  if(ok){
+    try{
+      const payload=JSON.parse(result), value=payload.result||payload;
+      if(value && value.id && Array.isArray(value.items)) mountTimelineEditor(card,value);
+    }catch(e){}
+  }
   scrollDown();
+}
+
+function mountTimelineEditor(card,timeline){
+  if(card._timelineEditor)card._timelineEditor.remove();
+  const editor=document.createElement('section');editor.className='timeline-editor';
+  const head=document.createElement('div');head.className='te-head';
+  const title=document.createElement('span');title.textContent='局部编辑';
+  const rev=document.createElement('span');rev.className='te-rev';rev.textContent='revision '+timeline.revision;
+  head.append(title,rev);editor.append(head);
+  (timeline.items||[]).forEach(item=>{
+    const row=document.createElement('div');row.className='te-clip';
+    const line=document.createElement('div');line.className='te-line';
+    const id=document.createElement('span');id.className='te-id';id.textContent=item.id;
+    const stamp=document.createElement('span');stamp.className='te-time';stamp.textContent=time(item.source_in_us)+' – '+time(item.source_out_us);
+    line.append(id,stamp);row.append(line);
+    const range=document.createElement('input');range.type='range';range.min=String(item.source_in_us);range.max=String(item.source_out_us);range.step='33333';range.value=String(item.source_in_us);range.setAttribute('aria-label','调整片段起点');
+    const end=document.createElement('input');end.type='range';end.min=String(item.source_in_us);end.max=String(item.source_out_us);end.step='33333';end.value=String(item.source_out_us);end.setAttribute('aria-label','调整片段终点');
+    const controls=document.createElement('div');controls.className='te-controls';
+    const apply=document.createElement('button');apply.textContent='保存入出点';apply.disabled=!!item.Locked;apply.onclick=()=>applyTimelineEdit(timeline,{kind:'trim_clip',target_clip_id:item.id,source_in_us:Number(range.value),source_out_us:Number(end.value)},editor);
+    const lock=document.createElement('button');lock.textContent=item.locked?'解锁':'锁定';lock.onclick=()=>applyTimelineEdit(timeline,{kind:item.locked?'unlock_clip':'lock_clip',target_clip_id:item.id},editor);
+    const del=document.createElement('button');del.textContent='删除';del.disabled=!!item.locked;del.onclick=()=>applyTimelineEdit(timeline,{kind:'delete_clip',target_clip_id:item.id},editor);
+    controls.append(apply,lock,del);row.append(range,end,controls);editor.append(row);
+  });
+  card.after(editor);card._timelineEditor=editor;
+}
+
+async function applyTimelineEdit(timeline,edit,editor){
+  const buttons=[...editor.querySelectorAll('button')];buttons.forEach(b=>b.disabled=true);
+  try{
+    const body={id:'ui-'+crypto.randomUUID(),timeline_id:timeline.id,base_revision:timeline.revision,...edit};
+    const r=await fetch('/v1/tools/edit_apply',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}),j=await r.json();
+    if(!j.ok)throw new Error(j.error?.message||'局部编辑失败');
+    mountTimelineEditor(editor.previousElementSibling,j.result);
+    toast('局部编辑已保存，revision '+j.result.revision);
+  }catch(e){toast(e.message);buttons.forEach(b=>b.disabled=false)}
 }
 
 function addThinking(){
