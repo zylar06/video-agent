@@ -31,6 +31,14 @@ jobs:
         with:
           go-version: '1.24.0'
           check-latest: true
+      - name: Install FFmpeg
+        run: |
+          if command -v ffmpeg >/dev/null && command -v ffprobe >/dev/null; then
+            echo "runner already provides ffmpeg/ffprobe"
+            exit 0
+          fi
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
       - name: Verify media tools
         run: ffmpeg -version && ffprobe -version
       - name: Run generated-fixture acceptance
