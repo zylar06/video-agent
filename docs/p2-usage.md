@@ -17,7 +17,7 @@ SRT 和 VTT 均支持。重复调用会按素材内容哈希、分析器版本�
 
 ## OpenAI-compatible provider
 
-ASR：`VIDEO_AGENT_ASR_*` 或 `AUTOCLIP_ASR_*`。视觉：`VIDEO_AGENT_VISION_*` 或 `AUTOCLIP_VISION_*`。Base URL 可填服务根地址或带 `/v1` 的地址。qwen3-asr-flash 使用 `/chat/completions` 接收不超过四分钟的音频分段；其他兼容 ASR 可以使用 `/audio/transcriptions`。视觉使用 `/chat/completions`。
+ASR：`VIDEO_AGENT_ASR_*` 或 `AUTOCLIP_ASR_*`。视觉：`VIDEO_AGENT_VISION_*` 或 `AUTOCLIP_VISION_*`。Base URL 可填服务根地址或带 `/v1` 的地址。`qwen-audio-*` 使用百炼原生多模态端点，服务端把音频切成不超过四分钟的片段并读取逐句 SSE 时间戳；qwen3-asr-flash 使用 `/chat/completions`，其他兼容 ASR 可以使用 `/audio/transcriptions`。视觉使用 `/chat/completions`，以 8 帧为一组分析全片 1fps 采样帧。
 
 `AUTOCLIP_TEXT_*` 是文本理解与方案模型，不是音频转写接口，不能直接当 ASR 使用；没有独立 ASR 时请导入已有 SRT/VTT，或配置 ASR 变量。模型密钥只从本机环境变量读取，不会进入浏览器、数据库、日志或 Git。
 

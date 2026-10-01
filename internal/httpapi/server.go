@@ -2,6 +2,7 @@
 package httpapi
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -9,8 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zylar06/video-agent/internal/agent"
@@ -19,33 +20,51 @@ import (
 	"github.com/zylar06/video-agent/internal/app"
 	"github.com/zylar06/video-agent/internal/chat"
 	"github.com/zylar06/video-agent/internal/domain"
+	"github.com/zylar06/video-agent/internal/planner"
+	"github.com/zylar06/video-agent/internal/store"
 )
 
-//go:embed web/index.html
+//go:embed web/chat.html
 var webFiles embed.FS
 
-//go:embed web/chat.html
-var chatPage []byte
+type uiAnalysisTask struct {
+	store              *store.Store
+	projectID, assetID string
+	mu                 sync.RWMutex
+	cancel             context.CancelFunc
+	status             string
+	result             analysis.Result
+	err                string
+}
 
-// New builds the local HTTP surface. The tool-calling chat routes are wired here
-// so the agent runtime reads the same model configuration as the rest of the
-// service.
+func (t *uiAnalysisTask) snapshot() map[string]any {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	run := t.result.Run
+	if t.status == "running" && t.store != nil {
+		runs, _ := t.store.AnalysisRuns(t.projectID, t.assetID)
+		for _, r := range runs {
+			if r.UpdatedAt.After(run.UpdatedAt) {
+				run = r
+			}
+		}
+	}
+	return map[string]any{"status": t.status, "run": run, "evidence": t.result.Evidence, "error": t.err}
+}
+
 func New(a *app.App) http.Handler {
 	s := agent.NewService(a)
+	var analysisTasksMu sync.RWMutex
+	analysisTasks := map[string]*uiAnalysisTask{}
 	mux := http.NewServeMux()
-	agentRoutes(mux, a)
-	mux.HandleFunc("GET /chat", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write(chatPage)
-	})
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/" {
 			http.NotFound(w, r)
 			return
 		}
-		data, err := webFiles.ReadFile("web/index.html")
+		data, err := webFiles.ReadFile("web/chat.html")
 		if err != nil {
-			http.Error(w, "web UI unavailable", http.StatusInternalServerError)
+			http.Error(w, "chat UI unavailable", http.StatusInternalServerError)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -136,19 +155,79 @@ func New(a *app.App) http.Handler {
 			ProjectID    string `json:"project_id"`
 			AssetID      string `json:"asset_id"`
 			SubtitlePath string `json:"subtitle_path,omitempty"`
+			Mode         string `json:"mode,omitempty"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
 			write(w, http.StatusBadRequest, invalid(err))
 			return
 		}
-		vision := provider.ConfigFromEnvAliases("VIDEO_AGENT_VISION", "AUTOCLIP_VISION")
-		visualEnabled := vision.BaseURL != "" && vision.Model != "" && vision.APIKey != ""
-		result, err := analysis.New(a.Store, a.Tools).Analyze(r.Context(), analysis.Request{ProjectID: in.ProjectID, AssetID: in.AssetID, SubtitlePath: in.SubtitlePath, Visual: visualEnabled})
-		if err != nil {
-			write(w, http.StatusBadRequest, agent.Envelope{APIVersion: agent.APIVersion, OK: false, Error: &agent.APIError{Code: "model_unavailable", Message: "请上传 SRT/VTT 字幕，或在服务端配置 AUTOCLIP_ASR_* 后重试。"}})
+		asrConfig := provider.ConfigFromEnvAliases("VIDEO_AGENT_ASR", "AUTOCLIP_ASR")
+		if in.Mode == "" {
+			in.Mode = "overview"
+		}
+		if in.Mode != "overview" && in.Mode != "deep" {
+			write(w, http.StatusBadRequest, invalid(errors.New("mode must be overview or deep")))
 			return
 		}
-		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: result})
+		visionConfig := provider.ConfigFromEnvAliases("VIDEO_AGENT_VISION", "AUTOCLIP_VISION")
+		visualEnabled := visionConfig.BaseURL != "" && visionConfig.Model != "" && visionConfig.APIKey != ""
+		if in.SubtitlePath == "" && (asrConfig.BaseURL == "" || asrConfig.Model == "" || asrConfig.APIKey == "") && !visualEnabled {
+			write(w, http.StatusBadRequest, agent.Envelope{APIVersion: agent.APIVersion, OK: false, Error: &agent.APIError{Code: "model_unavailable", Message: "请上传 SRT/VTT 字幕，或在服务端配置 AUTOCLIP_ASR_* / AUTOCLIP_VISION_* 后重试。"}})
+			return
+		}
+		taskID := "analysis-" + app.ID()
+		ctx, cancel := context.WithCancel(context.Background())
+		task := &uiAnalysisTask{cancel: cancel, status: "queued", store: a.Store, projectID: in.ProjectID, assetID: in.AssetID}
+		analysisTasksMu.Lock()
+		analysisTasks[taskID] = task
+		analysisTasksMu.Unlock()
+		go func() {
+			task.mu.Lock()
+			task.status = "running"
+			task.mu.Unlock()
+			defer cancel()
+			result, err := analysis.New(a.Store, a.Tools).Analyze(ctx, analysis.Request{ProjectID: in.ProjectID, AssetID: in.AssetID, SubtitlePath: in.SubtitlePath, AnalyzerVersion: "layered-v1", Provider: "fusion", Visual: visualEnabled, Parameters: map[string]any{"mode": in.Mode}})
+			task.mu.Lock()
+			defer task.mu.Unlock()
+			task.result = result
+			if err != nil {
+				task.err = err.Error()
+				if errors.Is(err, context.Canceled) {
+					task.status = "cancelled"
+				} else {
+					task.status = "failed"
+				}
+				return
+			}
+			task.status = "completed"
+		}()
+		write(w, http.StatusAccepted, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: map[string]string{"id": taskID, "status": "queued"}})
+	})
+	mux.HandleFunc("GET /v1/ui/analysis/{id}", func(w http.ResponseWriter, r *http.Request) {
+		analysisTasksMu.RLock()
+		task := analysisTasks[r.PathValue("id")]
+		analysisTasksMu.RUnlock()
+		if task == nil {
+			write(w, http.StatusNotFound, invalid(errors.New("analysis task not found")))
+			return
+		}
+		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: task.snapshot()})
+	})
+	mux.HandleFunc("POST /v1/ui/analysis/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		analysisTasksMu.RLock()
+		task := analysisTasks[r.PathValue("id")]
+		analysisTasksMu.RUnlock()
+		if task == nil {
+			write(w, http.StatusNotFound, invalid(errors.New("analysis task not found")))
+			return
+		}
+		task.mu.RLock()
+		cancel := task.cancel
+		task.mu.RUnlock()
+		if cancel != nil {
+			cancel()
+		}
+		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: task.snapshot()})
 	})
 	mux.HandleFunc("POST /v1/ui/proposals", func(w http.ResponseWriter, r *http.Request) {
 		var in chat.Request
@@ -161,25 +240,86 @@ func New(a *app.App) http.Handler {
 			write(w, http.StatusBadRequest, invalid(err))
 			return
 		}
-		draft, err := draftTimeline(a, in.ProjectID, in.AssetID, result)
+		if result.Intent.DurationUS <= 0 {
+			write(w, http.StatusUnprocessableEntity, agent.Envelope{APIVersion: agent.APIVersion, OK: false, Error: &agent.APIError{Code: "invalid_request", Message: "请说明目标时长，例如“剪成 60 秒”。"}})
+			return
+		}
+		draft, err := (planner.Service{Store: a.Store}).Create("draft-"+app.ID(), in.ProjectID, in.AssetID, result.Intent.Query, result.Intent.DurationUS, result.Evidence)
+		if err == nil {
+			draft, err = analysis.New(a.Store, a.Tools).Refine(r.Context(), draft)
+		}
 		if err != nil {
 			write(w, http.StatusBadRequest, invalid(err))
 			return
 		}
-		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: map[string]any{"reply": result.Reply, "intent": result.Intent, "evidence": result.Evidence, "timeline": draft}})
+		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: map[string]any{"reply": result.Reply, "intent": result.Intent, "draft": draft}})
+	})
+	mux.HandleFunc("GET /v1/ui/proposals/{id}", func(w http.ResponseWriter, r *http.Request) {
+		draft, err := a.Store.Draft(r.PathValue("id"))
+		if err != nil {
+			write(w, http.StatusNotFound, invalid(err))
+			return
+		}
+		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: draft})
+	})
+	mux.HandleFunc("POST /v1/ui/proposals/{id}/operations", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			BaseVersion int          `json:"base_version"`
+			Edit        planner.Edit `json:"edit"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+			write(w, http.StatusBadRequest, invalid(err))
+			return
+		}
+		draft, err := (planner.Service{Store: a.Store}).Apply(r.PathValue("id"), in.BaseVersion, in.Edit)
+		if err != nil {
+			if errors.Is(err, store.ErrConflict) {
+				write(w, http.StatusConflict, invalid(err))
+				return
+			}
+			if errors.Is(err, store.ErrNotFound) {
+				write(w, http.StatusNotFound, invalid(err))
+				return
+			}
+			write(w, http.StatusBadRequest, invalid(err))
+			return
+		}
+		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: draft})
+	})
+	mux.HandleFunc("POST /v1/ui/proposals/{id}/confirm", func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Version int `json:"version"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&in); err != nil {
+			write(w, http.StatusBadRequest, invalid(err))
+			return
+		}
+		draft, err := a.Store.Draft(r.PathValue("id"))
+		if err != nil {
+			write(w, http.StatusNotFound, invalid(err))
+			return
+		}
+		if draft.Version != in.Version {
+			write(w, http.StatusConflict, invalid(store.ErrConflict))
+			return
+		}
+		asset, err := a.Store.Asset(draft.ProjectID, draft.AssetID)
+		if err != nil {
+			write(w, http.StatusBadRequest, invalid(err))
+			return
+		}
+		timeline, err := planner.Timeline(draft, asset)
+		if err == nil {
+			err = a.Store.ConfirmDraft(draft, timeline)
+		}
+		if err != nil {
+			write(w, http.StatusBadRequest, invalid(err))
+			return
+		}
+		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: timeline})
 	})
 	mux.HandleFunc("POST /v1/ui/proposals/confirm", func(w http.ResponseWriter, r *http.Request) {
-		var timeline domain.TimelineRevision
-		if err := json.NewDecoder(io.LimitReader(r.Body, 4<<20)).Decode(&timeline); err != nil {
-			write(w, http.StatusBadRequest, invalid(err))
-			return
-		}
-		created, err := a.CreateTimeline(timeline)
-		if err != nil {
-			write(w, http.StatusBadRequest, invalid(err))
-			return
-		}
-		write(w, http.StatusOK, agent.Envelope{APIVersion: agent.APIVersion, OK: true, Result: created})
+		write(w, http.StatusGone, agent.Envelope{APIVersion: agent.APIVersion, OK: false, Error: &agent.APIError{Code: "invalid_request", Message: "请通过草案确认接口提交已审阅的候选片段。"}})
 	})
 	mux.HandleFunc("POST /v1/tools/{name}", func(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
@@ -256,50 +396,6 @@ func saveUpload(dataDir, group, name string, source io.Reader) (string, error) {
 		return "", errors.Join(copyErr, closeErr)
 	}
 	return path, nil
-}
-
-func draftTimeline(a *app.App, projectID, assetID string, result chat.Result) (domain.TimelineRevision, error) {
-	if len(result.Evidence) == 0 {
-		return domain.TimelineRevision{}, errors.New("没有找到可确认的素材片段，请换一种说法或补充字幕")
-	}
-	asset, err := a.Store.Asset(projectID, assetID)
-	if err != nil {
-		return domain.TimelineRevision{}, err
-	}
-	parts := strings.Split(asset.FPS, "/")
-	fpsNum, fpsDen := 30, 1
-	if len(parts) == 2 {
-		if n, e := strconv.Atoi(parts[0]); e == nil && n > 0 {
-			fpsNum = n
-		}
-		if d, e := strconv.Atoi(parts[1]); e == nil && d > 0 {
-			fpsDen = d
-		}
-	}
-	t := domain.TimelineRevision{ID: "timeline-" + app.ID(), ProjectID: projectID, Revision: 1, FPSNum: fpsNum, FPSDen: fpsDen, Width: asset.Width, Height: asset.Height}
-	remaining := result.Intent.DurationUS
-	for i, hit := range result.Evidence {
-		e := hit.Evidence
-		end := e.EndUS
-		if remaining > 0 && end-e.StartUS > remaining {
-			end = e.StartUS + remaining
-		}
-		if end <= e.StartUS {
-			break
-		}
-		t.Items = append(t.Items, domain.ClipItem{ID: "clip-" + strconv.Itoa(i+1), AssetID: e.AssetID, SourceInUS: e.StartUS, SourceOutUS: end, DurationFrames: t.Frames(end - e.StartUS), EvidenceIDs: []string{e.ID}})
-		if remaining > 0 {
-			remaining -= end - e.StartUS
-			if remaining <= 0 {
-				break
-			}
-		}
-	}
-	if len(t.Items) == 0 {
-		return domain.TimelineRevision{}, errors.New("候选片段无法生成时间线")
-	}
-	t.Reflow()
-	return t, nil
 }
 
 func Server(addr string, h http.Handler) *http.Server {

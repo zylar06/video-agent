@@ -126,10 +126,14 @@ func parseTimestamp(raw string) (int64, error) {
 	return int64((float64(hours)*3600+float64(minutes)*60+sec)*1e6 + 0.5), nil
 }
 
-func ToEvidence(project string, asset domain.MediaAsset, cues []Cue, provider, version string) []domain.Evidence {
+func ToEvidence(project string, asset domain.MediaAsset, cues []Cue, provider, version, cacheKey string) []domain.Evidence {
 	out := make([]domain.Evidence, 0, len(cues))
+	suffix := ""
+	if len(cacheKey) >= 12 {
+		suffix = "-" + cacheKey[:12]
+	}
 	for _, cue := range cues {
-		out = append(out, domain.Evidence{ID: fmt.Sprintf("%s-cue-%06d", asset.ID, cue.Index), ProjectID: project, AssetID: asset.ID, StartUS: cue.StartUS, EndUS: cue.EndUS, AssetContentHash: asset.ContentHash, Transcript: cue.Text, Provider: provider, AnalyzerVersion: version})
+		out = append(out, domain.Evidence{ID: fmt.Sprintf("%s-cue%s-%06d", asset.ID, suffix, cue.Index), ProjectID: project, AssetID: asset.ID, StartUS: cue.StartUS, EndUS: cue.EndUS, AssetContentHash: asset.ContentHash, Transcript: cue.Text, Provider: provider, AnalyzerVersion: version, CacheKey: cacheKey})
 	}
 	return out
 }

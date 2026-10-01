@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/zylar06/video-agent/internal/app"
+	"github.com/zylar06/video-agent/internal/domain"
 )
 
 func TestToolsAreLoopbackAPIJSON(t *testing.T) {
@@ -58,5 +60,85 @@ func TestUICreatesAProjectWithoutAnExposedID(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("create response: %s", resp.Status)
+	}
+}
+
+func TestUIDraftCanBeEditedAndConfirmed(t *testing.T) {
+	t.Setenv("AUTOCLIP_TEXT_BASE_URL", "")
+	t.Setenv("AUTOCLIP_TEXT_MODEL", "")
+	t.Setenv("AUTOCLIP_TEXT_API_KEY", "")
+	a, err := app.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	if err = a.Store.CreateProject(domain.Project{ID: "p", Name: "P"}); err != nil {
+		t.Fatal(err)
+	}
+	asset := domain.MediaAsset{ID: "a", ProjectID: "p", Path: "/fixture.mp4", ContentHash: "hash", DurationUS: 20_000_000, Width: 1280, Height: 720, FPS: "30/1", Status: "ready"}
+	if _, err = a.Store.PutAsset(asset); err != nil {
+		t.Fatal(err)
+	}
+	evidence := domain.Evidence{ID: "cue", ProjectID: "p", AssetID: "a", AssetContentHash: "hash", StartUS: 4_000_000, EndUS: 9_000_000, Transcript: "关键结论"}
+	if _, err = a.Store.PutEvidence(evidence); err != nil {
+		t.Fatal(err)
+	}
+	s := httptest.NewServer(New(a))
+	defer s.Close()
+	resp, err := http.Post(s.URL+"/v1/ui/proposals", "application/json", bytes.NewBufferString(`{"project_id":"p","asset_id":"a","message":"保留关键结论，剪成 5 秒"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proposal response: %s", resp.Status)
+	}
+	var created struct {
+		OK     bool `json:"ok"`
+		Result struct {
+			Draft domain.DraftPlan `json:"draft"`
+		} `json:"result"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+	if !created.OK || len(created.Result.Draft.Candidates) != 1 {
+		t.Fatalf("draft: %+v", created)
+	}
+	candidate := created.Result.Draft.Candidates[0]
+	edit := `{"base_version":1,"edit":{"candidate_id":"` + candidate.ID + `","kind":"lock"}}`
+	resp, err = http.Post(s.URL+"/v1/ui/proposals/"+created.Result.Draft.ID+"/operations", "application/json", bytes.NewBufferString(edit))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("edit response: %s", resp.Status)
+	}
+	var edited struct {
+		Result domain.DraftPlan `json:"result"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&edited); err != nil {
+		t.Fatal(err)
+	}
+	if edited.Result.Version != 2 || !edited.Result.Candidates[0].Locked {
+		t.Fatalf("edited draft: %+v", edited.Result)
+	}
+	resp, err = http.Post(s.URL+"/v1/ui/proposals/"+created.Result.Draft.ID+"/confirm", "application/json", bytes.NewBufferString(`{"version":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("confirm response: %s", resp.Status)
+	}
+	var confirmed struct {
+		Result domain.TimelineRevision `json:"result"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&confirmed); err != nil {
+		t.Fatal(err)
+	}
+	if len(confirmed.Result.Items) != 1 || !confirmed.Result.Items[0].Locked {
+		t.Fatalf("timeline: %+v", confirmed.Result)
 	}
 }

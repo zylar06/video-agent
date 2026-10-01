@@ -107,11 +107,14 @@
   <aside>
     <div class="brand"><span class="dot"></span><span>Video Agent<small>对话式剪辑助手</small></span></div>
     <button class="newchat" id="newChat">＋ 新对话</button>
+    <button class="newchat" id="uploadBtn">＋ 导入视频</button>
+    <input id="videoFile" type="file" accept="video/mp4,video/quicktime,video/x-m4v,.mp4,.mov,.m4v" hidden>
+    <div id="uploadStatus" class="sidefoot" style="border-top:0;padding-top:0" aria-live="polite"></div>
     <div class="sessions" id="sessions"></div>
     <div class="sidefoot">
       <div><b id="fModel">—</b></div>
       <div id="fTools">— 个工具</div>
-      <div><a href="/" style="color:var(--accent);text-decoration:none">打开经典剪辑台 →</a></div>
+      <div>本地证据驱动 · 确认后才会改动时间线</div>
     </div>
   </aside>
 
@@ -149,11 +152,12 @@
 <script>
 const $=id=>document.getElementById(id);
 let sessionId=localStorage.getItem('va.session')||'';
-let controller=null, running=false;
+let controller=null, running=false, mediaContext='';
 const thread=$('thread'), scroller=$('scroll');
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function toast(m){const t=$('toast');t.textContent=m;t.classList.add('on');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),2200)}
+function uploadStatus(text, bad=false){const el=$('uploadStatus');el.textContent=text;el.style.color=bad?'var(--bad)':'var(--muted)'}
 function setStep(text,busy){const el=$('mStep');el.textContent=text;el.className='pill'+(busy?'':' ok')}
 function scrollDown(){scroller.scrollTop=scroller.scrollHeight}
 
@@ -281,7 +285,7 @@ async function send(){
     const resp=await fetch('/v1/agent/chat',{
       method:'POST',
       headers:{'content-type':'application/json'},
-      body:JSON.stringify({session_id:sessionId,message:text}),
+      body:JSON.stringify({session_id:sessionId,message:(mediaContext?mediaContext+'\n':'')+text}),
       signal:controller.signal
     });
     if(!resp.ok||!resp.body){
@@ -364,6 +368,19 @@ input.addEventListener('keydown',e=>{
 });
 input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,190)+'px'});
 $('newChat').onclick=()=>{sessionId='';localStorage.removeItem('va.session');thread.innerHTML='';renderEmpty();loadSessions()};
+$('uploadBtn').onclick=()=>$('videoFile').click();
+$('videoFile').onchange=async()=>{
+  const file=$('videoFile').files[0]; if(!file)return;
+  try{
+    $('uploadBtn').disabled=true; uploadStatus('正在导入 '+file.name+'…');
+    const project=await fetch('/v1/ui/projects',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:file.name.replace(/\.[^.]+$/,'')||'未命名项目'})}).then(async r=>{const j=await r.json();if(!j.ok)throw new Error(j.error?.message||'项目创建失败');return j.result});
+    const form=new FormData();form.append('video',file);
+    const asset=await fetch('/v1/ui/projects/'+encodeURIComponent(project.id)+'/assets',{method:'POST',body:form}).then(async r=>{const j=await r.json();if(!j.ok)throw new Error(j.error?.message||'素材导入失败');return j.result.asset});
+    mediaContext=`当前已导入素材：项目 ID ${project.id}，素材 ID ${asset.id}，时长 ${(asset.duration_us/1e6).toFixed(1)} 秒。`;
+    uploadStatus('已导入：'+file.name);
+    addMessage('assistant',mediaContext+' 你可以直接告诉我如何剪辑。');
+  }catch(e){uploadStatus(e.message,true)}finally{$('uploadBtn').disabled=false;$('videoFile').value=''}
+};
 
 (async()=>{
   await loadConfig();

@@ -124,13 +124,13 @@ bin/video-agent --data data/demo serve --addr 127.0.0.1:8090
 
 ```sh
 AUTOCLIP_ASR_BASE_URL=https://<workspace>.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
-AUTOCLIP_ASR_MODEL=qwen3-asr-flash
+AUTOCLIP_ASR_MODEL=qwen-audio-3.1-asr-flash
 AUTOCLIP_ASR_API_KEY=<rotated-local-key>
 AUTOCLIP_TEXT_MODEL=qwen-plus
 AUTOCLIP_VISION_MODEL=qwen-vl-plus
 ```
 
-`qwen3-asr-flash` 由服务端将音频分成不超过四分钟的片段提交；API Key 不会暴露给浏览器。启用 ASR 或视觉分析即表示允许服务端将相应的音频片段或代表帧发送到你配置的 provider。文本和视觉模型分别通过已有的 `AUTOCLIP_TEXT_*` 与 `AUTOCLIP_VISION_*` 读取。
+`qwen-audio-3.1-asr-flash` 由服务端将音频分成不超过四分钟的片段提交，返回逐句时间戳；服务会使用百炼原生多模态端点，而不是 OpenAI-compatible 转写端点。API Key 不会暴露给浏览器。启用 ASR 或视觉分析即表示允许服务端将相应的音频片段或代表帧发送到你配置的 provider。文本和视觉模型分别通过已有的 `AUTOCLIP_TEXT_*` 与 `AUTOCLIP_VISION_*` 读取。
 
 ## 两人协作开发
 
