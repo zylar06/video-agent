@@ -98,6 +98,44 @@ func (s *Service) ToolSpecs() []ToolSpec {
 			}, "project_id", "query", "limit"),
 		},
 		{
+			Name: "draft_create",
+			Description: "把自然语言主题变成一份**可审阅的剪辑草稿**：按检索词挑出候选片段，每个候选带来源证据和安全可调范围。" +
+				"用户要按主题成片、还没确认具体片段时用它。这一步不会创建或改动任何时间线；" +
+				"如果是要往**已有**时间线里加片段，请改用 proposal_create。",
+			Parameters: obj(map[string]any{
+				"project_id": str("项目 id"), "asset_id": str("素材 id"),
+				"query": str("检索关键词，尽量用素材里出现过的原话"), "duration_us": num("目标成片时长（微秒），必填且大于 0"),
+				"limit": num("候选数量上限，默认 3"),
+			}, "project_id", "asset_id", "query", "duration_us"),
+		},
+		{
+			Name: "draft_get",
+			Description: "读取草稿的候选片段、当前 version 和边界。修改草稿前先调用它，用返回的 version 作为 base_version，" +
+				"并用返回的 min_start_us/max_end_us 判断还能往外扩多少。",
+			Parameters: obj(map[string]any{"id": str("草稿 id")}, "id"),
+		},
+		{
+			Name: "draft_edit",
+			Description: "按用户意见逐条修改草稿里的某个候选片段；**只改草稿，不动任何时间线**。" +
+				"调整边界优先用相对量 extend_start_us / extend_end_us（正数延长、负数缩短），例如“第一段再长一点”就是 extend_end_us 为正；" +
+				"base_version 必须等于 draft_get 返回的当前 version。改动必须落在安全范围内且片段至少保留 2 秒，越界会被拒绝。",
+			Parameters: obj(map[string]any{
+				"id": str("草稿 id"), "base_version": num("基线版本号，须等于当前 version"),
+				"candidate_id":    str("候选片段 id"),
+				"kind":            str("改动类型：adjust_bounds|delete|lock|unlock"),
+				"extend_start_us": num("起始边界的相对增量（微秒），正数变长、负数变短"),
+				"extend_end_us":   num("结束边界的相对增量（微秒），正数变长、负数变短"),
+				"start_us":        num("可选：起始边界的绝对微秒值，填了就不看 extend_start_us"),
+				"end_us":          num("可选：结束边界的绝对微秒值，填了就不看 extend_end_us"),
+			}, "id", "base_version", "candidate_id", "kind"),
+		},
+		{
+			Name: "draft_confirm",
+			Description: "确认草稿并生成时间线，返回 timeline id 与片段。这是草稿第一次真正影响工程：" +
+				"只有用户明确表示方案可以了才调用；确认后草稿不可再改，要改就在新时间线上编辑。",
+			Parameters: obj(map[string]any{"id": str("草稿 id"), "version": num("要确认的 version，须等于当前版本")}, "id", "version"),
+		},
+		{
 			Name:        "timeline_create",
 			Description: "用给定的片段创建一个版本化时间线，返回时间线 id。这是成片的载体；确认方案后再创建。",
 			Parameters: obj(map[string]any{

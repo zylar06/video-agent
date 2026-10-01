@@ -223,9 +223,21 @@ func (t Tools) Import(ctx context.Context, s *store.Store, project, path string)
 	}
 	hash := hex.EncodeToString(h.Sum(nil))
 	target := filepath.Join(dir, hash+".media")
-	if err = os.Link(tmp.Name(), target); err != nil && !errors.Is(err, os.ErrExist) {
-		return domain.MediaAsset{}, err
+	// Import is all-or-nothing: the snapshot is content-addressed and shared by
+	// every asset with the same bytes, so a failure after publication would
+	// leave a file no record points at. Only a link this call created is
+	// removed, never one that already existed.
+	published := false
+	if linkErr := os.Link(tmp.Name(), target); linkErr == nil {
+		published = true
+	} else if !errors.Is(linkErr, os.ErrExist) {
+		return domain.MediaAsset{}, linkErr
 	}
+	defer func() {
+		if published {
+			_ = os.Remove(target)
+		}
+	}()
 	actual, err := Hash(ctx, target)
 	if err != nil {
 		return domain.MediaAsset{}, err
@@ -238,7 +250,12 @@ func (t Tools) Import(ctx context.Context, s *store.Store, project, path string)
 		return domain.MediaAsset{}, err
 	}
 	a := domain.MediaAsset{ID: "asset-" + hash, ProjectID: project, Path: target, ContentHash: hash, DurationUS: info.DurationUS, Width: info.Width, Height: info.Height, HasAudio: info.HasAudio, Status: "ready", FPS: info.FPS, AudioChannels: info.AudioChannels, Rotation: info.Rotation}
-	return s.PutAsset(a)
+	asset, err := s.PutAsset(a)
+	if err != nil {
+		return domain.MediaAsset{}, err
+	}
+	published = false
+	return asset, nil
 }
 
 func Seconds(us int64) string { return strconv.FormatFloat(float64(us)/1e6, 'f', 6, 64) }

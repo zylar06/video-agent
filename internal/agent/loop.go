@@ -192,7 +192,29 @@ type View struct {
 	Succeeded bool   `json:"succeeded,omitempty"`
 }
 
+// HistorySnapshot is the durable form of a conversation. It contains both
+// provider messages (needed to continue the model turn) and the compact view
+// rendered by the browser (needed to replay tool cards without recomputing).
+type HistorySnapshot struct {
+	Version  int                `json:"version"`
+	Messages []provider.Message `json:"messages"`
+	View     []View             `json:"view"`
+}
+
 func NewHistory() *History { return &History{} }
+
+func (h *History) Snapshot() HistorySnapshot {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return HistorySnapshot{Version: 1, Messages: append([]provider.Message(nil), h.messages...), View: append([]View(nil), h.view...)}
+}
+
+func (h *History) Restore(snapshot HistorySnapshot) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.messages = append([]provider.Message(nil), snapshot.Messages...)
+	h.view = append([]View(nil), snapshot.View...)
+}
 
 func (h *History) Append(message provider.Message) {
 	h.mu.Lock()

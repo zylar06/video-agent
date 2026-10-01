@@ -45,6 +45,29 @@ func TestToolsAreLoopbackAPIJSON(t *testing.T) {
 	resp.Body.Close()
 }
 
+// The agent tool loop is the only natural-language entry point now; the
+// duplicate /v1/chat intent endpoint must not come back.
+func TestChatEndpointIsNotServed(t *testing.T) {
+	a, err := app.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	s := httptest.NewServer(New(a))
+	defer s.Close()
+	resp, err := http.Post(s.URL+"/v1/chat", "application/json", bytes.NewBufferString(`{"message":"剪成 1 分钟"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	// The "/" catch-all matches this path for GET only, so a POST arrives as
+	// 405 rather than 404. Either way the handler is gone; only 2xx would mean
+	// the duplicate endpoint came back.
+	if resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("/v1/chat must be gone, got %s", resp.Status)
+	}
+}
+
 func TestUICreatesAProjectWithoutAnExposedID(t *testing.T) {
 	a, err := app.Open(t.TempDir())
 	if err != nil {
@@ -85,7 +108,7 @@ func TestUIDraftCanBeEditedAndConfirmed(t *testing.T) {
 	}
 	s := httptest.NewServer(New(a))
 	defer s.Close()
-	resp, err := http.Post(s.URL+"/v1/ui/proposals", "application/json", bytes.NewBufferString(`{"project_id":"p","asset_id":"a","message":"保留关键结论，剪成 5 秒"}`))
+	resp, err := http.Post(s.URL+"/v1/ui/proposals", "application/json", bytes.NewBufferString(`{"project_id":"p","asset_id":"a","query":"关键结论","duration_us":5000000}`))
 	if err != nil {
 		t.Fatal(err)
 	}

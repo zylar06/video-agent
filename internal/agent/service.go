@@ -14,6 +14,7 @@ import (
 	"github.com/zylar06/video-agent/internal/catalog"
 	"github.com/zylar06/video-agent/internal/domain"
 	"github.com/zylar06/video-agent/internal/edit"
+	"github.com/zylar06/video-agent/internal/planner"
 	"github.com/zylar06/video-agent/internal/store"
 )
 
@@ -39,7 +40,7 @@ type Service struct{ App *app.App }
 func NewService(a *app.App) *Service { return &Service{App: a} }
 
 func (s *Service) Names() []string {
-	return []string{"analyze", "assets_import", "assets_list", "edit_apply", "evidence_add", "jobs_cancel", "jobs_get", "jobs_list", "project_create", "project_get", "project_list", "proposal_create", "render_submit", "search", "timeline_create", "timeline_get", "timeline_history"}
+	return []string{"analyze", "assets_import", "assets_list", "draft_confirm", "draft_create", "draft_edit", "draft_get", "edit_apply", "evidence_add", "jobs_cancel", "jobs_get", "jobs_list", "project_create", "project_get", "project_list", "proposal_create", "render_submit", "search", "timeline_create", "timeline_get", "timeline_history"}
 }
 
 func (s *Service) Call(ctx context.Context, name string, raw json.RawMessage) Envelope {
@@ -126,6 +127,57 @@ func (s *Service) call(ctx context.Context, name string, raw json.RawMessage) (a
 			return nil, err
 		}
 		return s.App.Store.Assets(in.ProjectID)
+	case "draft_create":
+		var in struct {
+			ProjectID  string `json:"project_id"`
+			AssetID    string `json:"asset_id"`
+			Query      string `json:"query"`
+			DurationUS int64  `json:"duration_us"`
+			Limit      int    `json:"limit,omitempty"`
+		}
+		if err := decode(raw, &in); err != nil {
+			return nil, err
+		}
+		return planner.Service{Store: s.App.Store}.CreateFromQuery("draft-"+app.ID(), in.ProjectID, in.AssetID, in.Query, in.DurationUS, in.Limit)
+	case "draft_get":
+		var in struct {
+			ID string `json:"id"`
+		}
+		if err := decode(raw, &in); err != nil {
+			return nil, err
+		}
+		return s.App.Store.Draft(in.ID)
+	case "draft_edit":
+		var in struct {
+			ID          string `json:"id"`
+			BaseVersion int    `json:"base_version"`
+			CandidateID string `json:"candidate_id"`
+			Kind        string `json:"kind"`
+			StartUS     int64  `json:"start_us,omitempty"`
+			EndUS       int64  `json:"end_us,omitempty"`
+			ExtendStart int64  `json:"extend_start_us,omitempty"`
+			ExtendEnd   int64  `json:"extend_end_us,omitempty"`
+		}
+		if err := decode(raw, &in); err != nil {
+			return nil, err
+		}
+		return planner.Service{Store: s.App.Store}.Apply(in.ID, in.BaseVersion, planner.Edit{
+			CandidateID:   in.CandidateID,
+			Kind:          in.Kind,
+			StartUS:       in.StartUS,
+			EndUS:         in.EndUS,
+			ExtendStartUS: in.ExtendStart,
+			ExtendEndUS:   in.ExtendEnd,
+		})
+	case "draft_confirm":
+		var in struct {
+			ID      string `json:"id"`
+			Version int    `json:"version"`
+		}
+		if err := decode(raw, &in); err != nil {
+			return nil, err
+		}
+		return s.confirmDraft(in.ID, in.Version)
 	case "timeline_create":
 		var in domain.TimelineRevision
 		if err := decode(raw, &in); err != nil {
@@ -237,6 +289,34 @@ func (s *Service) call(ctx context.Context, name string, raw json.RawMessage) (a
 	default:
 		return nil, fmt.Errorf("unknown tool %q", name)
 	}
+}
+
+// confirmDraft is the only step where a reviewed draft becomes real: it
+// materializes the candidates into a new timeline and freezes the draft in one
+// transaction. Confirming twice is rejected rather than silently re-applied.
+func (s *Service) confirmDraft(id string, version int) (domain.TimelineRevision, error) {
+	draft, err := s.App.Store.Draft(id)
+	if err != nil {
+		return domain.TimelineRevision{}, err
+	}
+	if draft.Status != "draft" {
+		return domain.TimelineRevision{}, errors.New("草稿已经确认过了，请在新的时间线上继续编辑")
+	}
+	if draft.Version != version {
+		return domain.TimelineRevision{}, fmt.Errorf("%w: 草稿当前 version=%d，请求 version=%d", store.ErrConflict, draft.Version, version)
+	}
+	asset, err := s.App.Store.Asset(draft.ProjectID, draft.AssetID)
+	if err != nil {
+		return domain.TimelineRevision{}, err
+	}
+	timeline, err := planner.Timeline(draft, asset)
+	if err != nil {
+		return domain.TimelineRevision{}, err
+	}
+	if err = s.App.Store.ConfirmDraft(draft, timeline); err != nil {
+		return domain.TimelineRevision{}, err
+	}
+	return timeline, nil
 }
 
 func (s *Service) propose(timelineID, query string, limit int) (domain.EditProposal, error) {

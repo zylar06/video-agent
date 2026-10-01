@@ -17,11 +17,17 @@ const minCandidateUS int64 = 2_000_000
 
 type Service struct{ Store *store.Store }
 
+// Edit is one reviewable change to a candidate. "adjust_bounds" accepts either
+// absolute bounds (StartUS/EndUS) or deltas (ExtendStartUS/ExtendEndUS); a delta
+// is what a user actually asks for ("make this longer"), and it keeps the caller
+// from having to know the current bounds to stay inside the safe handles.
 type Edit struct {
-	CandidateID string `json:"candidate_id"`
-	Kind        string `json:"kind"`
-	StartUS     int64  `json:"start_us,omitempty"`
-	EndUS       int64  `json:"end_us,omitempty"`
+	CandidateID   string `json:"candidate_id"`
+	Kind          string `json:"kind"`
+	StartUS       int64  `json:"start_us,omitempty"`
+	EndUS         int64  `json:"end_us,omitempty"`
+	ExtendStartUS int64  `json:"extend_start_us,omitempty"`
+	ExtendEndUS   int64  `json:"extend_end_us,omitempty"`
 }
 
 func (s Service) Create(id, projectID, assetID, query string, durationUS int64, matches []catalog.SearchResult) (domain.DraftPlan, error) {
@@ -114,6 +120,23 @@ func makeCandidate(planID string, n int, asset domain.MediaAsset, match catalog.
 	return domain.CandidateSegment{ID: planID + "-candidate-" + strconv.Itoa(n), AssetID: asset.ID, StartUS: start, EndUS: end, MinStartUS: max(int64(0), start-2_000_000), MaxEndUS: min(asset.DurationUS, end+2_000_000), EvidenceIDs: ids, Score: match.Score, Reasons: reasons}
 }
 
+// CreateFromQuery turns a search phrase directly into a reviewable draft. It is
+// the single implementation behind both the draft_create agent tool and the
+// /v1/ui/proposals endpoint, so the two entry points cannot drift apart.
+func (s Service) CreateFromQuery(id, projectID, assetID, query string, durationUS int64, limit int) (domain.DraftPlan, error) {
+	if limit <= 0 {
+		limit = 3
+	}
+	matches, err := s.Store.SearchEvidence(projectID, query, []string{assetID}, limit)
+	if err != nil {
+		return domain.DraftPlan{}, err
+	}
+	if len(matches) == 0 {
+		return domain.DraftPlan{}, errors.New("没有找到与该主题相关的证据，请换一个关键词，或先对素材做内容理解")
+	}
+	return s.Create(id, projectID, assetID, query, durationUS, matches)
+}
+
 func (s Service) Apply(draftID string, baseVersion int, edit Edit) (domain.DraftPlan, error) {
 	p, err := s.Store.Draft(draftID)
 	if err != nil {
@@ -136,7 +159,14 @@ func (s Service) Apply(draftID string, baseVersion int, edit Edit) (domain.Draft
 		}
 		switch edit.Kind {
 		case "adjust_bounds":
-			start, end := snap(asset.FPS, edit.StartUS), snap(asset.FPS, edit.EndUS)
+			startUS, endUS := edit.StartUS, edit.EndUS
+			if startUS == 0 {
+				startUS = c.StartUS + edit.ExtendStartUS
+			}
+			if endUS == 0 {
+				endUS = c.EndUS + edit.ExtendEndUS
+			}
+			start, end := snap(asset.FPS, startUS), snap(asset.FPS, endUS)
 			if start < c.MinStartUS || end > c.MaxEndUS || end-start < minCandidateUS {
 				return p, errors.New("调整后的片段必须位于安全范围内且至少保留 2 秒")
 			}

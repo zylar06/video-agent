@@ -458,7 +458,7 @@ input.addEventListener('keydown',e=>{
   if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing){e.preventDefault();send()}
 });
 input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,190)+'px'});
-$('newChat').onclick=()=>{sessionId='';localStorage.removeItem('va.session');thread.innerHTML='';renderEmpty();loadSessions()};
+$('newChat').onclick=()=>{if(sessionId)localStorage.removeItem('va.media.'+sessionId);sessionId='';localStorage.removeItem('va.session');mediaContext='';thread.innerHTML='';renderEmpty();loadSessions()};
 $('uploadBtn').onclick=()=>$('videoFile').click();
 $('videoFile').onchange=async()=>{
   const file=$('videoFile').files[0]; if(!file)return;
@@ -467,13 +467,16 @@ $('videoFile').onchange=async()=>{
     const project=await fetch('/v1/ui/projects',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:file.name.replace(/\.[^.]+$/,'')||'未命名项目'})}).then(async r=>{const j=await r.json();if(!j.ok)throw new Error(j.error?.message||'项目创建失败');return j.result});
     const form=new FormData();form.append('video',file);
     const asset=await fetch('/v1/ui/projects/'+encodeURIComponent(project.id)+'/assets',{method:'POST',body:form}).then(async r=>{const j=await r.json();if(!j.ok)throw new Error(j.error?.message||'素材导入失败');return j.result.asset});
+    if(!sessionId){sessionId='session-'+crypto.randomUUID();localStorage.setItem('va.session',sessionId)}
     mediaContext=`当前已导入素材：项目 ID ${project.id}，素材 ID ${asset.id}，时长 ${(asset.duration_us/1e6).toFixed(1)} 秒。`;
+    localStorage.setItem('va.media.'+sessionId,mediaContext);
     uploadStatus('已导入：'+file.name);
     addMessage('assistant',mediaContext+' 你可以直接告诉我如何剪辑。');
   }catch(e){uploadStatus(e.message,true)}finally{$('uploadBtn').disabled=false;$('videoFile').value=''}
 };
 
 (async()=>{
+  if(sessionId)mediaContext=localStorage.getItem('va.media.'+sessionId)||'';
   await loadConfig();
   renderEmpty();
   if(sessionId){await replay(sessionId)}else{loadSessions()}

@@ -85,10 +85,16 @@ func CacheKey(assetHash, version, provider string, parameters map[string]any) (s
 	return hex.EncodeToString(h[:]), nil
 }
 
-func (s *Service) Analyze(ctx context.Context, req Request) (Result, error) {
+// PrepareRun normalizes a request and derives the exact cache key Analyze will
+// use. Callers that need to persist a durable record of a run before it starts
+// (the Web analysis endpoint) must go through this, otherwise their cache key
+// would silently drift from the one the run is stored under. The returned
+// request carries the defaulted analyzer version and provider, so callers see
+// the values that actually participated in the key.
+func (s *Service) PrepareRun(req Request) (Request, domain.MediaAsset, map[string]any, string, error) {
 	asset, err := s.Store.Asset(req.ProjectID, req.AssetID)
 	if err != nil {
-		return Result{}, err
+		return req, domain.MediaAsset{}, nil, "", err
 	}
 	if req.AnalyzerVersion == "" {
 		req.AnalyzerVersion = "p2-v1"
@@ -104,12 +110,20 @@ func (s *Service) Analyze(ctx context.Context, req Request) (Result, error) {
 	if req.SubtitlePath != "" {
 		b, hashErr := os.ReadFile(req.SubtitlePath)
 		if hashErr != nil {
-			return Result{}, hashErr
+			return req, asset, nil, "", hashErr
 		}
 		h := sha256.Sum256(b)
 		parameters["_subtitle_content_hash"] = hex.EncodeToString(h[:])
 	}
 	key, err := CacheKey(asset.ContentHash, req.AnalyzerVersion, req.Provider, parameters)
+	if err != nil {
+		return req, asset, nil, "", err
+	}
+	return req, asset, parameters, key, nil
+}
+
+func (s *Service) Analyze(ctx context.Context, req Request) (Result, error) {
+	req, asset, parameters, key, err := s.PrepareRun(req)
 	if err != nil {
 		return Result{}, err
 	}
